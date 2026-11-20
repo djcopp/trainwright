@@ -1,0 +1,172 @@
+"""One metric implementation for every run, baseline and evaluation, so numbers are comparable."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import numpy as np
+
+CLASSIFICATION_METRICS = {
+    "accuracy": "max",
+    "balanced_accuracy": "max",
+    "macro_f1": "max",
+    "weighted_f1": "max",
+    "roc_auc": "max",
+    "log_loss": "min",
+    "ece": "min",
+}
+REGRESSION_METRICS = {"rmse": "min", "mae": "min", "r2": "max", "mape": "min"}
+
+
+def metric_mode(metric: str) -> str:
+    m = metric.removeprefix("val_").removeprefix("test_")
+    if m in CLASSIFICATION_METRICS:
+        return CLASSIFICATION_METRICS[m]
+    if m in REGRESSION_METRICS:
+        return REGRESSION_METRICS[m]
+    if m.endswith("loss"):
+        return "min"
+    raise KeyError(f"Unknown metric {metric!r}")
+
+
+def valid_metrics(task: str) -> list[str]:
+    return list(CLASSIFICATION_METRICS if task == "classification" else REGRESSION_METRICS)
+
+
+def _softmax(logits: np.ndarray) -> np.ndarray:
+    z = logits - logits.max(axis=1, keepdims=True)
+    e = np.exp(z)
+    return e / e.sum(axis=1, keepdims=True)
+
+
+def expected_calibration_error(probs: np.ndarray, y: np.ndarray, bins: int = 15) -> float:
+    conf = probs.max(axis=1)
+    pred = probs.argmax(axis=1)
+    correct = (pred == y).astype(np.float64)
+    edges = np.linspace(0, 1, bins + 1)
+    ece = 0.0
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        m = (conf > lo) & (conf <= hi)
+        if m.any():
+            ece += m.mean() * abs(correct[m].mean() - conf[m].mean())
+    return float(ece)
+
+
+def classification_metrics(y: np.ndarray, probs: np.ndarray, n_classes: int) -> dict[str, float]:
+    from sklearn.metrics import (
+        accuracy_score,
+        balanced_accuracy_score,
+        f1_score,
+        log_loss,
+        roc_auc_score,
+    )
+
+    y = np.asarray(y).astype(int)
+    probs = np.asarray(probs, dtype=np.float64)
+    pred = probs.argmax(axis=1)
+    labels = list(range(n_classes))
+    out: dict[str, float] = {
+        "accuracy": float(accuracy_score(y, pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(y, pred))
+        if len(np.unique(y)) > 1
+        else float("nan"),
+        "macro_f1": float(
+            f1_score(y, pred, average="macro", labels=sorted(set(y.tolist())), zero_division=0)
+        ),
+        "weighted_f1": float(f1_score(y, pred, average="weighted", zero_division=0)),
+    }
+    p = np.clip(probs, 1e-7, 1)
+    p = p / p.sum(axis=1, keepdims=True)
+    out["log_loss"] = float(log_loss(y, p, labels=labels))
+    try:
+        if n_classes == 2:
+            out["roc_auc"] = float(roc_auc_score(y, probs[:, 1]))
+        else:
+            present = sorted(set(y.tolist()))
+            if len(present) > 2:
+                sub = probs[:, present]
+                sub = sub / np.clip(sub.sum(axis=1, keepdims=True), 1e-12, None)
+                out["roc_auc"] = float(
+                    roc_auc_score(y, sub, multi_class="ovr", average="macro", labels=present)
+                )
+    except ValueError:
+        out["roc_auc"] = float("nan")
+    out["ece"] = expected_calibration_error(probs, y)
+    return out
+
+
+def regression_metrics(y: np.ndarray, pred: np.ndarray) -> dict[str, float]:
+    y = np.asarray(y, dtype=np.float64)
+    pred = np.asarray(pred, dtype=np.float64).reshape(-1)
+    err = pred - y
+    ss_tot = float(((y - y.mean()) ** 2).sum())
+    nz = np.abs(y) > 1e-8
+    return {
+        "rmse": float(np.sqrt((err**2).mean())),
+        "mae": float(np.abs(err).mean()),
+        "r2": float(1 - (err**2).sum() / ss_tot) if ss_tot > 0 else float("nan"),
+        "mape": float(np.abs(err[nz] / y[nz]).mean()) if nz.any() else float("nan"),
+    }
+
+
+def compute_metrics(
+    task: str,
+    y: np.ndarray,
+    outputs: np.ndarray,
+    n_classes: int | None = None,
+    outputs_are_probs: bool = False,
+) -> dict[str, float]:
+    """``outputs``: logits/probs [N, K] for classification, predictions [N] for regression
+    (already on the original target scale)."""
+    if task == "classification":
+        probs = outputs if outputs_are_probs else _softmax(np.asarray(outputs, dtype=np.float64))
+        return classification_metrics(y, probs, n_classes or probs.shape[1])
+    return regression_metrics(y, outputs)
+
+
+def confusion(y: np.ndarray, pred: np.ndarray, n_classes: int) -> np.ndarray:
+    cm = np.zeros((n_classes, n_classes), dtype=np.int64)
+    np.add.at(cm, (np.asarray(y, int), np.asarray(pred, int)), 1)
+    return cm
+
+
+def per_class_report(y: np.ndarray, pred: np.ndarray, classes: list[str]) -> list[dict[str, Any]]:
+    cm = confusion(y, pred, len(classes))
+    rows = []
+    for i, c in enumerate(classes):
+        tp = cm[i, i]
+        support = cm[i].sum()
+        predicted = cm[:, i].sum()
+        prec = tp / predicted if predicted else 0.0
+        rec = tp / support if support else 0.0
+        f1 = 2 * prec * rec / (prec + rec) if prec + rec else 0.0
+        rows.append(
+            {
+                "class": c,
+                "precision": float(prec),
+                "recall": float(rec),
+                "f1": float(f1),
+                "support": int(support),
+            }
+        )
+    return rows
+
+
+def top_confusions(cm: np.ndarray, classes: list[str], k: int = 10) -> list[dict[str, Any]]:
+    off = cm.copy()
+    np.fill_diagonal(off, 0)
+    flat = np.argsort(off, axis=None)[::-1][:k]
+    out = []
+    for f in flat:
+        i, j = np.unravel_index(f, off.shape)
+        if off[i, j] == 0:
+            break
+        out.append(
+            {
+                "true": classes[i],
+                "predicted": classes[j],
+                "count": int(off[i, j]),
+                "share_of_true": float(off[i, j] / max(1, cm[i].sum())),
+            }
+        )
+    return out
