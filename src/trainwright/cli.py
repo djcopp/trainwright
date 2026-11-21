@@ -1077,6 +1077,221 @@ def report() -> None:
     emit({"path": str(path)}, f"wrote {_rel(path)}")
 
 
+# --------------------------------------------------------------------------- distillation
+
+
+def _read_instructions(text: str) -> str:
+    if text.startswith("@"):
+        return Path(text[1:]).read_text()
+    return text
+
+
+@app.command()
+def label(
+    input_: Path = typer.Option(
+        ..., "--input", "-i", help="Unlabelled CSV/Parquet or a folder of images."
+    ),
+    labels: str | None = typer.Option(
+        None, help="Comma-separated label set (default: the project's classes)."
+    ),
+    column: str | None = typer.Option(
+        None, help="Text column to label (default: whole row for tables)."
+    ),
+    instructions: str = typer.Option("", help="Labelling guidelines, or @file.md."),
+    model: str = typer.Option(
+        "claude-opus-5-5", help="Claude model id (use the one you run in production to distil it)."
+    ),
+    effort: str = typer.Option(
+        "low", help="low | medium | high (classification rarely needs more than low)."
+    ),
+    max_cost_usd: float = typer.Option(
+        5.0, help="Hard spend cap; labelling stops before exceeding it."
+    ),
+    limit: int | None = typer.Option(None, help="Only label the first N items (pilot run)."),
+    out: Path = typer.Option(Path("labelled.csv"), help="Output CSV."),
+    estimate: bool = typer.Option(False, "--estimate", help="Only print the cost estimate."),
+    concurrency: int = typer.Option(8),
+) -> None:
+    """Label data with Claude (structured output, confidence, rationale) under a spend cap."""
+    import pandas as pd
+
+    from .label import estimate_cost, label_items
+    from .preprocessing import IMAGE_EXTENSIONS
+
+    STATE["command"] = "label"
+    if labels:
+        label_set = [x.strip() for x in labels.split(",") if x.strip()]
+    else:
+        try:
+            from .data.split import load_split
+
+            sp = load_split(_project())
+            label_set = list(sp["classes"]) if sp and sp.get("classes") else []
+        except Exception:
+            label_set = []
+    if len(label_set) < 2:
+        raise CLIError(
+            "Need at least two labels.",
+            "Pass --labels 'a,b,c' (or run inside a project with a split).",
+        )
+    if input_.is_dir():
+        files = sorted(
+            f for f in input_.rglob("*") if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
+        )
+        modality, items = "image", [str(f) for f in files]
+        df = pd.DataFrame({"path": [str(f.resolve()) for f in files]})
+    else:
+        from .data.records import read_table
+
+        df = read_table(input_)
+        if column:
+            if column not in df.columns:
+                raise CLIError(f"Column {column!r} not found.", f"Columns: {list(df.columns)}")
+            modality, items = "text", df[column].astype(str).tolist()
+        else:
+            modality = "tabular"
+            items = df.astype(object).where(df.notna(), None).to_dict(orient="records")
+    if limit:
+        items, df = items[:limit], df.iloc[:limit].copy()
+    instr = _read_instructions(instructions)
+    est = estimate_cost(items, modality, label_set, instr, model)
+    if estimate:
+        emit(
+            est,
+            f"{est['n_items']} items x ~{est['avg_input_tokens']} input tokens on {model}: "
+            f"~${est['estimated_usd']:.2f} (cap ${max_cost_usd})",
+        )
+        return
+    if est["estimated_usd"] > max_cost_usd:
+        raise CLIError(
+            f"Estimated cost ${est['estimated_usd']:.2f} exceeds --max-cost-usd {max_cost_usd}.",
+            "Pilot with --limit 50, use a cheaper --model, or raise --max-cost-usd deliberately.",
+        )
+    progress(
+        f"labelling {len(items)} {modality} items with {model} (estimate ${est['estimated_usd']:.2f}, cap ${max_cost_usd})"
+    )
+    rows, spend = label_items(
+        items,
+        label_set,
+        instr,
+        modality,
+        model,
+        effort,
+        max_cost_usd,
+        concurrency,
+        progress=progress,
+    )
+    df = df.reset_index(drop=True)
+    df["label"] = [r.get("label") for r in rows]
+    df["llm_confidence"] = [r.get("confidence") for r in rows]
+    df["llm_rationale"] = [r.get("rationale") for r in rows]
+    df["label_source"] = [f"llm:{model}" if r.get("label") else r.get("status") for r in rows]
+    df.to_csv(out, index=False)
+    ok = int(df["label"].notna().sum())
+    data_flag = (
+        f"--data {_rel(out)} --target label"
+        + (" --image-column path" if modality == "image" else "")
+        + (f" --text-column {column}" if modality == "text" else "")
+    )
+    emit(
+        {"out": str(out), "labelled": ok, "spend": spend, "estimate": est},
+        f"labelled {ok}/{len(rows)} items -> {_rel(out)}  (spent ${spend['usd']:.3f}, {spend['refusals']} refusals, "
+        f"{spend['errors']} errors{', BUDGET HIT' if spend['budget_hit'] else ''})\n"
+        "NOTE: models trained on these labels learn to agree with the LLM. Hand-check a sample "
+        "and use `trainwright review` after training to find label errors.",
+        [
+            {
+                "command": f"trainwright init {data_flag}",
+                "why": "turn the labelled data into a project",
+            }
+        ],
+    )
+
+
+@app.command()
+def review(
+    ref: str = typer.Argument("best-neural"),
+    top: int = typer.Option(50, help="Queue size."),
+    adjudicate_model: str | None = typer.Option(
+        None,
+        "--adjudicate",
+        help="Ask this Claude model to re-label disputed items blind (costs money).",
+    ),
+    instructions: str = typer.Option("", help="Guidelines for the adjudicator, or @file.md."),
+    max_cost_usd: float = typer.Option(2.0),
+    apply_agreed: bool = typer.Option(
+        False, help="Append items where the adjudicator sides with the model to corrections.csv."
+    ),
+) -> None:
+    """Rank likely label errors (confident val disagreements); optionally adjudicate with an LLM."""
+    import csv
+
+    from .label import adjudicate, review_queue, write_review
+    from .leaderboard import resolve_ref
+
+    STATE["command"] = "review"
+    project = _project()
+    run = resolve_ref(project, ref)
+    q = review_queue(project, run, top)
+    spend = None
+    agreed: list[dict[str, Any]] = []
+    if adjudicate_model:
+        from .data.split import load_split
+
+        classes = (load_split(project) or {}).get("classes") or []
+        q, spend = adjudicate(
+            q,
+            classes,
+            _read_instructions(instructions),
+            project.config.modality,
+            adjudicate_model,
+            max_cost_usd,
+        )
+        agreed = [x for x in q["queue"] if x.get("llm_verdict") == x["model_prediction"]]
+        if apply_agreed and agreed:
+            corr = project.root / "corrections.csv"
+            new = not corr.exists()
+            with corr.open("a", newline="") as f:
+                w = csv.writer(f)
+                if new:
+                    w.writerow(["id", "label", "source", "note"])
+                for x in agreed:
+                    w.writerow(
+                        [
+                            x["id"],
+                            x["model_prediction"],
+                            f"llm:{adjudicate_model}",
+                            f"was {x['given_label']}; model {x['model_confidence']:.2f}",
+                        ]
+                    )
+    paths = write_review(project, q)
+    lines = [
+        f"{q['n_val_disagreements']} val items where {run.id} disagrees with the label; top {len(q['queue'])} "
+        f"by model confidence -> {_rel(paths['queue'])}"
+    ]
+    if paths.get("sheet"):
+        lines.append(f"image grid: {_rel(paths['sheet'])}")
+    for x in q["queue"][:8]:
+        lines.append(
+            f"  {x['id'][:40]:<40} label={x['given_label']:<18} model={x['model_prediction']} "
+            f"({x['model_confidence']:.2f})"
+            + (f" llm={x['llm_verdict']}" if x.get("llm_verdict") else "")
+        )
+    if spend:
+        lines.append(
+            f"adjudicator {adjudicate_model}: sided with the model on {len(agreed)}/{len(q['queue'])} "
+            f"(likely label errors), spent ${spend['usd']:.3f}"
+        )
+    nxt = [
+        {
+            "command": f"edit {_rel(paths['corrections'])} (id,label,source,note), then set data.corrections: corrections.csv "
+            "in trainwright.yaml and re-train",
+            "why": "fix label errors; the split stays frozen",
+        }
+    ]
+    emit({**q, "paths": paths, "spend": spend, "agreed": len(agreed)}, "\n".join(lines), nxt)
+
+
 # --------------------------------------------------------------------------- reference
 
 

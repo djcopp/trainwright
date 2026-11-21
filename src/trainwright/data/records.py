@@ -27,6 +27,7 @@ class Records:
     groups: np.ndarray | None = None
     times: np.ndarray | None = None
     dropped_missing_target: int = 0
+    corrections: dict[str, Any] | None = None
     _pos: dict[str, int] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
@@ -110,9 +111,33 @@ def load_records(project_root: Path, cfg: ProjectConfig) -> Records:
     path = p if p.is_absolute() else (project_root / p).resolve()
     if not path.exists():
         raise FileNotFoundError(f"Data path {path} does not exist (data.path in trainwright.yaml)")
-    if cfg.modality == "image":
-        return _load_images(path, cfg)
-    return _load_table_like(path, cfg)
+    recs = _load_images(path, cfg) if cfg.modality == "image" else _load_table_like(path, cfg)
+    if cfg.data.corrections:
+        recs = _apply_corrections(recs, project_root, cfg.data.corrections)
+    return recs
+
+
+def _apply_corrections(recs: Records, root: Path, rel: str) -> Records:
+    from .._utils import sha256_file
+    from ..label import load_corrections
+
+    cpath = Path(rel) if Path(rel).is_absolute() else root / rel
+    fixes = load_corrections(cpath)
+    y = recs.y.copy().astype(object)
+    applied = 0
+    for rid, lab in fixes.items():
+        k = recs._pos.get(rid)
+        if k is not None and str(y[k]) != lab:
+            y[k] = lab if recs.task == "classification" else float(lab)
+            applied += 1
+    recs.y = y.astype(str) if recs.task == "classification" else y.astype(float)
+    recs.corrections = {
+        "file": str(rel),
+        "sha256": sha256_file(cpath)[:16],
+        "applied": applied,
+        "unknown_ids": sum(1 for r in fixes if r not in recs._pos),
+    }
+    return recs
 
 
 def _load_table_like(path: Path, cfg: ProjectConfig) -> Records:

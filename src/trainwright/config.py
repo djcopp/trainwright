@@ -49,6 +49,9 @@ class DataConfig(_Strict):
         None, description="Rows sharing a group never straddle splits."
     )
     time_column: str | None = Field(None, description="Split chronologically on this column.")
+    corrections: str | None = Field(
+        None, description="CSV (id,label) of label fixes applied on load; see `trainwright review`."
+    )
 
 
 class SplitConfig(_Strict):

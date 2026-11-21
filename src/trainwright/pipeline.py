@@ -119,6 +119,7 @@ def train(
         parent=parent,
         project_root=project.root,
         extra_meta={
+            "corrections": records.corrections,
             "model": exp.model.name,
             "split_hash": split["split_hash"],
             "data_fingerprint": records.fingerprint,
