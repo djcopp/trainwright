@@ -56,8 +56,14 @@ LADDERS: dict[str, list[tuple[str, dict[str, Any], float, str]]] = {
         (
             "encoder",
             {"model.name": "text_pretrained"},
-            0.70,
-            "autopilot: fine-tune a small pretrained sentence encoder",
+            0.30,
+            "autopilot: fine-tune a small pretrained sentence encoder (bge-small, 33M)",
+        ),
+        (
+            "encoder-base",
+            {"model.name": "text_pretrained", "model.params.encoder": "FacebookAI/roberta-base"},
+            0.45,
+            "autopilot: fine-tune a base-size encoder (roberta-base, 125M): nuance, sarcasm, tone",
         ),
     ],
 }
