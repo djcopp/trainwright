@@ -106,12 +106,23 @@ def status(project: Project) -> dict[str, Any]:
             "evaluate the single selected model on test exactly once",
         )
     )
+    finals = [r for r in runs if r.meta.get("kind") == "final" and r.meta.get("status") == "completed"]
+    steps.append(
+        _step(
+            "finalize",
+            bool(finals),
+            f"production model(s): {[r.id for r in finals]}" if finals else "no production model yet",
+            f"trainwright finalize {best_neural['id'] if best_neural else '<run>'}",
+            "retrain the chosen recipe on train+val for the production model",
+        )
+    )
+    target = finals[-1].id if finals else (best["id"] if best else "<run>")
     steps.append(
         _step(
             "export",
             bool(exported),
             f"bundles: {exported}" if exported else "nothing exported",
-            f"trainwright export {best['id'] if best else '<run>'}",
+            f"trainwright export {target}",
             "package a torch-free ONNX bundle + FastAPI server",
         )
     )
