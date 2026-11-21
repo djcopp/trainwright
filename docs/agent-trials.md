@@ -119,5 +119,45 @@ feature set, plus some of the in-progress v0.3 changes. The harness now verifies
 | ONNX weights in a sidecar file were reported as a 0.13 MB model | single-file bundles under 1.8 GB; size counts all model files |
 | the MCP server failed on `mcp` 2.x (`FastMCP` renamed) | supports both versions; tested |
 
-<!-- ROUND3 -->
+## Round 3 (trainwright v0.3.0, frozen and verified)
+
+All four tasks were re-run in the trainwright condition against a frozen, non-editable v0.3.0
+install (`which trainwright` recorded), in folders outside the repo. Controls are reused from
+rounds 1–2, since their environment didn't change.
+
+| task | metric | trainwright (r1/r2) | **trainwright (r3)** | control | wall time r3 vs control |
+|---|---|---|---|---|---|
+| eye_movements | accuracy | 0.693 | **0.865** | 0.908 | 7.3 vs 23.6 min |
+| banking77 | accuracy | 0.884 | **0.930** | 0.937 | 25.8 vs 19.5 min |
+| superconduct | RMSE ↓ | 10.87 | **10.16** | 9.60 | 13.9 vs 8.3 min |
+| car_parts | macro-F1 | 0.992 | 0.971 | 0.991 | 11.5 vs 6.3 min |
+
+- **eye_movements:** `profile` flagged `assgNo`. The agent checked that every holdout assignment
+  appears in training, kept the random split on purpose, wrote a `features.py` with
+  per-assignment means and deviations, and picked the simpler of two tied runs. The MLP beat
+  gradient boosting on the same features by 6.6 points (val 84.4% vs 77.8%). Remaining gap to
+  control: the control also used holdout rows' features for its group statistics (transductive)
+  and tuned longer.
+- **banking77:** the default `text_pretrained` (MiniLM) took the agent from 0.884 to 0.930. It
+  also tried bge-small, found it statistically tied, and shipped the smaller model. The gap to
+  control (bge, refit on all data) is about one standard error on 1,960 messages.
+- **superconduct:** both conditions shipped gradient boosting. The remaining gap is training
+  data. `finalize` kept the test split out of the production model (about 72% of the rows vs the
+  control's 85%), even though test had already been scored.
+- **car_parts:** a regression caused by the round-2 playbook change. The agent followed the new
+  "try a DINOv2 linear probe first" step and made a single run. But `freeze_backbone` reused the
+  fine-tuning recipe (LR 1e-3, dropout, label smoothing, 15 epochs), which under-trains a probe
+  head (test macro-F1 0.933).
+
+### Changes made because of round 3
+
+| finding | change |
+|---|---|
+| linear probe under-trained | dedicated `image_probe` model with the standard probe recipe (LR 1e-2, no dropout/smoothing, 30 epochs) |
+| production model withheld already-scored test data | `finalize` includes test automatically once the test evaluation is recorded (`--no-include-test` to opt out) |
+| exporting a production model warned "no test evaluation" | bundles and model cards report the parent run's held-out metrics |
+| benchmark throughput was dominated by resizing 12 MP photos, not the model | benchmark reports model-only vs end-to-end throughput and what dominates |
+
+<!-- ROUND4 -->
+
 
