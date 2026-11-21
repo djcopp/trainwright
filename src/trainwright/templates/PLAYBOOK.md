@@ -100,15 +100,18 @@ residual MLP, AdamW + cosine, early stopping.
 2. `model.params.num_embedding=periodic` (often a large gain on numeric data), `hidden=512`.
 3. Overfitting → `optim.weight_decay` up (1e-4 → 1e-3 → 1e-2), `model.params.dropout` 0.2-0.4.
 4. Imbalance → `train.class_weights=balanced`. Skewed regression target → `preprocess.target_transform=log1p`.
-5. If HistGradientBoosting still wins after features + tuning, ship it: `trainwright export <baseline-run>` works.
+5. If HistGradientBoosting still wins or ties after features + tuning, ship it: `trainwright finalize <baseline-run>` then `export`.
 
 **Image** (`image_pretrained`, resnet18 at 224px): fine-tunes an ImageNet backbone with a 10x lower backbone LR.
 1. Look at `.trainwright/samples.png` first. If left/right matters: `preprocess.hflip=false`.
-2. Fast iteration: `preprocess.image_size=160` and/or `model.params.backbone=mobilenet_v3_large`.
-3. Overfitting → `preprocess.augment=medium|strong`, `train.label_smoothing=0.1`, `train.freeze_backbone_epochs=2`.
-4. Accuracy ceiling → `backbone=efficientnet_b0|convnext_tiny`, `optim.backbone_lr_mult=0.3`, more epochs.
-5. Tiny / non-photo images (icons, scans, <=64px) → `model.name=image_cnn`.
-6. Open `runs/<id>/eval/val_errors.png` to see mistakes; mislabelled data is common (`trainwright review`).
+2. Small dataset (a few thousand images or fewer): try a linear probe on self-supervised features first,
+   `-o model.params.backbone=dinov2_small -o model.params.freeze_backbone=true` (fast, often excellent),
+   then fine-tune (`freeze_backbone=false`) if it plateaus.
+3. Fast iteration: `preprocess.image_size=160` and/or `model.params.backbone=mobilenet_v3_large`.
+4. Overfitting → `preprocess.augment=medium|strong`, `train.label_smoothing=0.1`, `train.freeze_backbone_epochs=2`.
+5. Accuracy ceiling → `backbone=efficientnet_b0|convnext_tiny`, `optim.backbone_lr_mult=0.3`, more epochs.
+6. Tiny / non-photo images (icons, scans, <=64px) → `model.name=image_cnn`.
+7. Open `runs/<id>/eval/val_errors.png` to see mistakes; mislabelled data is common (`trainwright review`).
 
 **Text** (`text_pretrained`: fine-tuned MiniLM, when `trainwright[text]` is installed; else `text_bag`).
 1. Compare against `tfidf_linear`: it's strong on small data.
