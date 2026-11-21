@@ -32,12 +32,14 @@ trainwright init --data data.csv --target label     # once; writes trainwright.y
 trainwright profile                     # READ it: leaks, duplicates, group keys, recommendations
 #   -> look at the data yourself (pandas), decide the deployment scenario (below),
 #      fix data.drop / data.group_column, write features.py if domain features are obvious
-trainwright auto --budget 15m           # the whole search: split, baselines, strong recipes for the
-                                        # modality, seed replicas, ensemble, finalize on train+val
+trainwright auto --budget 20m --background   # the whole search: split, baselines, strong recipes,
+trainwright wait --timeout 7m           #   seed replicas, ensemble, finalize on train+val; repeat
+                                        #   `wait` until it reports "auto finished"
 #   -> your edge: better features / data fixes, then `trainwright auto` again
 #      (it only reruns steps that are stale), or targeted runs on the leader (below)
 trainwright evaluate best --split test --reason "final model"   # ONCE, at the end
-trainwright predict -i holdout.csv --out predictions.csv        # serves the finalized model
+trainwright predict -i holdout.csv --out predictions.csv --columns prediction   # finalized model;
+                                        # --columns picks id/filename/prediction/confidence
 trainwright export final && trainwright benchmark final         # ONNX bundle, server, cost vs LLM
 trainwright report                      # reports/REPORT.md for the human
 ```
@@ -48,8 +50,10 @@ for machine-readable output. Every command prints `next:` suggestions.
 ## Use the whole time budget
 
 `auto` gives a strong, well-validated model in one command; that is the floor, not the goal.
-Give it roughly a third to a half of your time (`--budget`, it stops on time). Spend the rest on
-what a search cannot do, rerunning `auto` after each data/feature change:
+Bigger budgets buy better models (more seeds, longer schedules), so give it **about half of your
+total time**, not just what fits in one tool call: `--background` detaches it, `wait --timeout 7m`
+blocks in bounded chunks. While it runs, read the data and draft `features.py` (don't start other
+training). Spend the rest on what a search cannot do, rerunning `auto` after each change:
 
 1. **The data.** Leaks (`profile` flags single-column and sum-of-columns leaks), the deployment
    scenario (group keys, time), duplicates, label noise (`trainwright review`).
@@ -171,7 +175,8 @@ text `tokens` (int64 [B,L], 0 = pad). Return logits `[B, n_outputs]`.
 
 ## Long runs
 
-The CLI blocks while training. For anything that may exceed your tool timeout:
+The CLI blocks while training. `trainwright auto --background` + `trainwright wait` handles the
+search. For single runs that may exceed your tool timeout:
 
 - set a wall-clock budget: `-o train.time_budget=15m` (training stops gracefully, best checkpoint kept), and/or
 - run it in the background and poll: `trainwright show latest` prints epochs so far.

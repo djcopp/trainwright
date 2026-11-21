@@ -152,6 +152,23 @@ def status(project: Project) -> dict[str, Any]:
     todo = [s for s in steps if not s["done"]]
     next_steps = [{"command": s["command"], "why": s["why"]} for s in todo[:2]]
     warnings = []
+    from .autopilot import read_state
+
+    auto = read_state(project)
+    if auto and auto.get("status") == "running":
+        import time
+
+        left = max(0, int(float(auto.get("deadline", 0)) - time.time()))
+        next_steps = [
+            {
+                "command": "trainwright wait --timeout 7m",
+                "why": f"auto is running in the background (~{left // 60}m{left % 60:02d}s of budget left)",
+            }
+        ]
+    elif auto and auto.get("status") in ("failed", "died"):
+        warnings.append(
+            f"last auto run {auto['status']}: {auto.get('error')} (see .trainwright/auto.log)"
+        )
     if failed:
         warnings.append(
             f"{len(failed)} failed/interrupted run(s): {[r.id for r in failed][-3:]}; "
@@ -178,6 +195,7 @@ def status(project: Project) -> dict[str, Any]:
         if best
         else None,
         "stages": steps,
+        "auto": auto,
         "next_steps": next_steps,
         "warnings": warnings,
     }

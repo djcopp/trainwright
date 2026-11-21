@@ -346,3 +346,13 @@ def test_profile_flags_a_target_that_is_a_sum_of_columns():
     df["casual"], df["registered"] = y * share, y * (1 - share)
     leaks = _leakage_scan(df, y.to_numpy(), "regression")
     assert leaks and set(leaks[0]["column"].split(", ")) == {"casual", "registered"}
+
+
+def test_auto_background_and_wait(regression_project):
+    tw = regression_project
+    tw("init", "--data", "houses.csv", "--target", "price")
+    started = tw("auto", "--budget", "60s", "--background", *FAST, "-o", "train.max_epochs=4")
+    assert started["result"]["pid"] > 0
+    assert tw("status")["next_steps"][0]["command"].startswith("trainwright wait")
+    done = tw("wait", "--timeout", "5m")["result"]
+    assert done["status"] == "done" and done["best"]

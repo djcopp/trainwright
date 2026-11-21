@@ -19,7 +19,7 @@ from typing import Any
 import typer
 
 from . import __version__
-from ._utils import to_json, write_json
+from ._utils import fmt_seconds, to_json, write_json
 
 app = typer.Typer(
     add_completion=False,
@@ -714,10 +714,19 @@ def auto(
     seeds: bool = typer.Option(
         True, help="Add seed replicas of the best neural recipe if time allows."
     ),
+    background: bool = typer.Option(
+        False,
+        "--background",
+        help="Detach and return at once; follow with `trainwright wait` (for budgets longer than "
+        "your tool timeout).",
+    ),
 ) -> None:
     """Run the whole search in one command: profile, split, baselines, strong recipes, ensemble, finalize."""
+    import subprocess
+    import sys
+
     from ._utils import parse_duration
-    from .autopilot import autopilot
+    from .autopilot import autopilot, log_path, read_state
     from .config import parse_override
     from .leaderboard import format_table, leaderboard
 
@@ -726,6 +735,47 @@ def auto(
     project.load_user_plugins()
     budget_s = parse_duration(budget) or 1200.0
     ov = dict(parse_override(o) for o in override)
+    if background:
+        st = read_state(project)
+        if st and st.get("status") == "running":
+            raise CLIError(f"auto is already running (pid {st['pid']}): `trainwright wait`")
+        project.ensure_dirs()
+        args = [sys.executable, "-m", "trainwright", "auto", "--budget", f"{int(budget_s)}s"]
+        args += [x for o in override for x in ("-o", o)]
+        args += [] if finish else ["--no-finish"]
+        args += [] if seeds else ["--no-seeds"]
+        lp = log_path(project)
+        with lp.open("a") as f:
+            proc = subprocess.Popen(
+                args, cwd=project.root, stdout=f, stderr=subprocess.STDOUT, start_new_session=True
+            )
+        import time as _time
+
+        from .autopilot import state_path
+
+        now = _time.time()  # written now so `status`/`wait` see it before the child starts up
+        write_json(
+            state_path(project),
+            {
+                "status": "running",
+                "pid": proc.pid,
+                "started": now,
+                "deadline": now + budget_s,
+                "budget_s": budget_s,
+            },
+        )
+        emit(
+            {"pid": proc.pid, "log": str(lp), "budget_s": budget_s},
+            f"auto started in the background (pid {proc.pid}, budget {fmt_seconds(budget_s)}); "
+            f"log: {_rel(lp)}",
+            [
+                {
+                    "command": "trainwright wait --timeout 7m",
+                    "why": "blocks until auto finishes (or the timeout), printing progress; repeat as needed",
+                }
+            ],
+        )
+        return
     res = autopilot(project, budget_s, ov, finish=finish, seeds=seeds, progress=progress)
     rows = leaderboard(project)
     best = res.get("best") or {}
@@ -755,6 +805,71 @@ def auto(
             }
         )
     emit(res, "\n".join(lines), nxt)
+
+
+@app.command()
+def wait(
+    timeout: str = typer.Option("7m", help="Give up waiting after this long (auto keeps running)."),
+) -> None:
+    """Wait for a background `trainwright auto` to finish, printing its progress."""
+    import time as _time
+
+    from ._utils import parse_duration
+    from .autopilot import log_path, read_state
+    from .leaderboard import format_table, leaderboard
+
+    STATE["command"] = "wait"
+    project = _project()
+    st = read_state(project)
+    if st is None:
+        raise CLIError("No auto run found. Start one with `trainwright auto --background`.")
+    lp = log_path(project)
+    seen = lp.stat().st_size if lp.exists() else 0
+    end = _time.time() + (parse_duration(timeout) or 420.0)
+    while st and st.get("status") == "running" and _time.time() < end:
+        _time.sleep(5)
+        if lp.exists() and lp.stat().st_size > seen:
+            with lp.open() as f:
+                f.seek(seen)
+                for line in f.read().splitlines():
+                    if line.startswith("[auto"):
+                        progress(line)
+            seen = lp.stat().st_size
+        st = read_state(project)
+    assert st is not None
+    status_ = st.get("status")
+    if status_ == "running":
+        left = max(0.0, float(st.get("deadline", 0)) - _time.time())
+        emit(
+            st,
+            f"auto still running (about {fmt_seconds(left)} of budget left)",
+            [{"command": "trainwright wait --timeout 7m", "why": "keep waiting"}],
+        )
+        return
+    if status_ in ("failed", "died"):
+        tail = lp.read_text().splitlines()[-15:] if lp.exists() else []
+        raise CLIError(f"auto {status_}: {st.get('error')}\n" + "\n".join(tail))
+    rows = leaderboard(project)
+    best = st.get("best") or "best"
+    emit(
+        st,
+        "auto finished\n\n" + format_table(rows, project.config.metric),
+        [
+            {
+                "command": f'trainwright evaluate {best} --split test --reason "final estimate"',
+                "why": "the one honest number for the val-picked model (once)",
+            },
+            {"command": "trainwright predict -i <new data>", "why": "serves the finalized model"},
+        ],
+    )
+
+
+@app.command("leaderboard", hidden=True)
+def leaderboard_alias(
+    limit: int = typer.Option(30, help="Rows to show."),
+) -> None:
+    """Alias for `trainwright runs`."""
+    runs_cmd(all_=False, limit=limit)
 
 
 @app.command("runs")
@@ -1162,6 +1277,12 @@ def predict(
     use_final: bool = typer.Option(
         True, "--final/--no-final", help="Use the run's finalized production model if one exists."
     ),
+    columns: str | None = typer.Option(
+        None,
+        "--columns",
+        help="Comma-separated output columns for --out, e.g. 'prediction' or 'filename,prediction'. "
+        "Available: id, filename (image basename), prediction, confidence.",
+    ),
 ) -> None:
     """Predict with a run's exported bundle (exported automatically if needed).
 
@@ -1244,14 +1365,29 @@ def predict(
     rows = []
     for i in range(0, len(items), 512):
         rows += pred.predict(items[i : i + 512])
+    clf = pred.task == "classification"
+    cols = (
+        [c.strip() for c in columns.split(",") if c.strip()]
+        if columns
+        else (["id", "prediction", "confidence"] if clf else ["id", "prediction"])
+    )
+    avail = {"id", "filename", "prediction"} | ({"confidence"} if clf else set())
+    if bad := [c for c in cols if c not in avail]:
+        raise CLIError(f"Unknown --columns {bad}", f"Available: {sorted(avail)}")
+
+    def cell(k: int, r: dict[str, Any], c: str) -> Any:
+        if c == "id":
+            return ids[k]
+        if c == "filename":
+            return Path(ids[k]).name
+        if c == "confidence":
+            return f"{r['confidence']:.5f}"
+        return r["label"] if clf else r["prediction"]
+
     with out_path.open("w", newline="") as f:
         w = csv.writer(f)
-        if pred.task == "classification":
-            w.writerow(["id", "prediction", "confidence"])
-            w.writerows([ids[k], r["label"], f"{r['confidence']:.5f}"] for k, r in enumerate(rows))
-        else:
-            w.writerow(["id", "prediction"])
-            w.writerows([ids[k], r["prediction"]] for k, r in enumerate(rows))
+        w.writerow(cols)
+        w.writerows([cell(k, r, c) for c in cols] for k, r in enumerate(rows))
     emit(
         {"path": str(out_path), "n": len(rows), "model": target},
         f"wrote {len(rows)} predictions to {_rel(out_path)} (model {target})",

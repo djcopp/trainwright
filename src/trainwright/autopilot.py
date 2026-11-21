@@ -63,6 +63,34 @@ LADDERS: dict[str, list[tuple[str, dict[str, Any], float, str]]] = {
 }
 
 
+def state_path(project: Project) -> Any:
+    return project.state_dir / "auto.json"
+
+
+def log_path(project: Project) -> Any:
+    return project.state_dir / "auto.log"
+
+
+def read_state(project: Project) -> dict[str, Any] | None:
+    """The background/foreground auto run's state, with a liveness check on its pid."""
+    import json
+    import os
+
+    p = state_path(project)
+    if not p.exists():
+        return None
+    st = json.loads(p.read_text())
+    if st.get("status") == "running":
+        try:
+            os.kill(int(st["pid"]), 0)
+        except (OSError, ValueError, KeyError):
+            st["status"] = "died"
+            st["error"] = (
+                "the auto process exited without finishing (killed or crashed); see auto.log"
+            )
+    return st
+
+
 def profile_project(project: Project, keep_ids: bool = False) -> dict[str, Any]:
     """Profile the data, auto-drop id-like/constant columns into data.drop, save profile.json."""
     from .data.profile import profile as _profile
@@ -124,6 +152,41 @@ def autopilot(
     seeds: bool = True,
     progress: Say | None = print,
 ) -> dict[str, Any]:
+    """Run the search; records running/done/failed in .trainwright/auto.json for `wait`/`status`."""
+    import os
+    import traceback
+
+    t0 = time.time()
+    try:
+        res = _autopilot(project, budget_s, overrides, finish, seeds, progress)
+    except BaseException as e:
+        write_json(
+            state_path(project),
+            {"status": "failed", "pid": os.getpid(), "started": t0, "finished": time.time(),
+             "error": f"{type(e).__name__}: {e}"},
+        )  # fmt: skip
+        with log_path(project).open("a") as f:
+            f.write(traceback.format_exc())
+        raise
+    write_json(
+        state_path(project),
+        {"status": "done", "pid": os.getpid(), "started": t0, "finished": time.time(),
+         "budget_s": budget_s, "best": (res.get("best") or {}).get("id"),
+         "final": res.get("final")},
+    )  # fmt: skip
+    return res
+
+
+def _autopilot(
+    project: Project,
+    budget_s: float,
+    overrides: dict[str, Any] | None = None,
+    finish: bool = True,
+    seeds: bool = True,
+    progress: Say | None = print,
+) -> dict[str, Any]:
+    import os
+
     from .baselines import BASELINES, run_baselines
     from .config import resolve_experiment
     from .ensemble import build_ensemble
@@ -131,9 +194,27 @@ def autopilot(
     from .pipeline import ensure_split, finalize, get_records, train
     from .tracking import Run
 
-    say = progress or (lambda s: None)
     t0 = time.time()
     deadline = t0 + budget_s
+    project.ensure_dirs()
+    prev = read_state(project)
+    if prev and prev.get("status") == "running" and int(prev.get("pid", -1)) != os.getpid():
+        raise RuntimeError(
+            f"auto is already running (pid {prev['pid']}); `trainwright wait` for it to finish"
+        )
+    write_json(
+        state_path(project),
+        {"status": "running", "pid": os.getpid(), "started": t0, "deadline": deadline,
+         "budget_s": budget_s},
+    )  # fmt: skip
+    lp = log_path(project)
+
+    def say(msg: str) -> None:
+        with lp.open("a") as f:
+            f.write(msg + "\n")
+        if progress:
+            progress(msg)
+
     reserve = 0.2 * budget_s if finish else 0.0  # kept back for finalize
     cfg = project.config
     overrides = dict(overrides or {})
@@ -202,6 +283,22 @@ def autopilot(
             )
         except Exception as e:  # one failing recipe must not sink the search
             note(f"{name} failed: {type(e).__name__}: {str(e)[:200]}")
+
+    # spend spare budget on a recipe search around the best neural run (tabular: cheap runs)
+    bn = best_run(project, kind="neural")
+    if cfg.modality == "tabular" and bn is not None and current(bn):
+        per = float(bn.get("train_time_s") or 0.0) + 5
+        spare = left() * 0.55
+        if spare > 6 * per and spare > 60:
+            from .tune import run_tune
+
+            res = run_tune(project, f"{int(spare)}s", from_run=bn["id"], n_trials=8, progress=None)
+            b2 = best_run(project, kind="neural")
+            m = cfg.metric
+            note(
+                f"tune: {len(res.get('trials', []))} trials in {fmt_seconds(spare)}; best neural now "
+                f"{b2['id'] if b2 else '?'} val_{m}={(b2 or {}).get(f'val_{m}')}"
+            )
 
     # seed replicas of the best neural recipe, then the ensemble over everything
     n_seeds = 1
