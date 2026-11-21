@@ -23,6 +23,7 @@ dependencies = [
     "pyyaml>=6.0",
     "typer>=0.12",
     "matplotlib>=3.8",
+    "pyarrow>=15",
 ]
 
 [project.optional-dependencies]
