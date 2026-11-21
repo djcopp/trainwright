@@ -1,177 +1,250 @@
-# trainwright
-
-**Agent-first PyTorch training for small, task-specific models.**
-
-A lot of production LLM calls are narrow, repetitive jobs: route this ticket, classify this photo,
-score this row. A small model trained for that one task can be as accurate, thousands of times cheaper
-and a hundred times faster. Coding agents can build those models, but left to themselves the result
-depends on the run: a different stack each time, a default scikit-learn model with no comparison,
-a test set peeked at during tuning, no record of what was tried, and nothing deployable at the end.
-
-trainwright is a framework *and* an operating procedure for agents. Like PyTorch Lightning it
-standardises the training loop and the data plumbing. Unlike Lightning, every command is built to
-be driven by an agent: it returns structured output, refuses steps done out of order, diagnoses
-each run, and tells the agent what to try next.
-
-```
-profile → decide deployment scenario → split (frozen, duplicate-aware) → baseline
-        → train (hypothesis) → diagnose → iterate (features.py, models, tune)
-        → evaluate on the sealed test set once → finalize → export (ONNX + server) → benchmark vs the LLM
-```
-
-## Does it help? Agent A/B trials
-
-We gave Claude Code (Sonnet) the same vague, realistic request on four lesser-known public datasets,
-once with a plain Python ML environment (**control**) and once with trainwright installed. We scored
-both on a 15% holdout the agents never saw. Then we read the transcripts, fixed what trainwright got wrong,
-and ran it again. Full method, transcripts summary and every change are in
-[docs/agent-trials.md](docs/agent-trials.md).
-
-<!-- RESULTS_TABLE -->
-
-What the loop taught us, and what is now built in:
-
-- **Leakage is everywhere and invisible.** The car-parts photos are bursts taken 2 s apart. A random
-  split lets a 16×16-pixel linear model score 0.80 macro-F1, and grouping near-duplicates drops it
-  to 0.33. Splits are now duplicate-aware by default (perceptual hashes for images, exact matches for rows and text).
-- **The playbook must not forbid the winning move.** In round 1 the control agent won eye_movements
-  with per-assignment feature engineering, which trainwright had no place for. `features.py` is now
-  first-class, and `profile` flags entity keys and asks the agent whether future rows come from seen
-  or unseen groups. In round 3 the trainwright agent did exactly that and rose from 0.69 to 0.86.
-- **Ship the strongest model, not your favourite.** When an MLP only ties gradient boosting,
-  trainwright says so (bootstrap standard errors everywhere). The agent then ships the simpler model, and `finalize`
-  refits it on train+val.
-- **Single runs are partly luck, for models and for agents.** Three seeds of one MLP recipe ranged
-  0.797–0.853 val accuracy (bootstrap SE 0.009), and two identical straight prompts scored 0.908 and
-  0.696. `trainwright ensemble --seeds 3` averages seeds and combines runs with greedy weights, and
-  the harness runs every condition twice.
-- **Give agents modern defaults.** Pretrained text encoders (MiniLM, bge) and frozen DINOv2 features
-  were the control agents' best tools, so both are now one override away.
-
-## Install
-
-```bash
-uv add "trainwright[all]"          # or: pip install "trainwright[all]"
-```
-
-Extras: `vision` (torchvision backbones), `text` (pretrained transformer encoders: MiniLM, bge, DINOv2),
-`onnx` + `serve` (export and FastAPI serving), `label` (LLM labelling via the Claude API), `mcp` (MCP server).
-Python 3.10+. CUDA, Apple Silicon (MPS) and CPU are picked automatically.
-
-## Use it with an agent
-
-```bash
-cd my-repo
-trainwright agent-setup            # writes AGENTS.md, a CLAUDE.md import and a Claude Code skill
-```
-
-Then ask the way you would anyway:
-
-> "We identify car parts in photos with a Sonnet agent and it's getting expensive. The labelled photos are in
-> images/. Can we train a smaller model that runs cheaply in the cloud?"
-
-Here is what the agent did in trial round 2. The skill launched on its own, and the excerpt below is
-abridged but verbatim from the transcript:
-
-```text
-$ trainwright init --data images && trainwright profile
-1092 examples (image, classification)
-target: 8 classes, imbalance 23.44:1
-  * 67% of examples have a duplicate or near-duplicate (image dHash-256, hamming <= 41; 422 distinct
-    groups, largest 85). The split keeps each group inside one split (split.dedup=true) so scores
-    are not inflated by near-copies.
-$ trainwright split && trainwright baseline
-baseline pixels_linear  val_macro_f1=0.7307
-$ trainwright train --hypothesis "default resnet18 recipe beats pixel baseline" -o train.time_budget=6m
-run 003-image-pretrained: best val_macro_f1=0.9704 at epoch 2/7
-  - [warning] early_peak: Best epoch was 2; validation got worse immediately afterwards. LR is likely
-    too high or the model is far too large for the data.
-  - [info] noisy_validation: ... bootstrap standard error of ±0.024 (259 examples) ...
-$ trainwright train --from-run 003-image-pretrained -o optim.lr=0.000333 \
-      --hypothesis "early_peak: lower LR preserves pretrained features"
-#   run                         kind      val_macro_f1    params  time  epochs
-1   004-image-pretrained        neural    0.9835 ±0.0072  11.18M  119s  7/12
-2≈  003-image-pretrained        neural    0.9704 ±0.0244  11.18M  57s   2/7
-3   002-baseline-pixels-linear  baseline  0.7307 ±0.0613  -       0s    -
-$ trainwright evaluate best --split test --reason "final model"        # once
-004-image-pretrained on test (n=175): macro_f1=0.9955
-$ trainwright finalize best && trainwright export 005-final-004-image-pretrained
-$ trainwright benchmark 005-final-004-image-pretrained
-cost per 1M predictions (ESTIMATE; edit `cost:` in trainwright.yaml):
-  small model on 2 vCPU / 4 GB general-purpose cloud VM @ $0.05/h: $4.8850
-  claude-sonnet-5-5 @ 1850 in / 30 out tokens: $4,000.00
-```
-
-On the hidden holdout this model scored 0.992 macro-F1. The agent's report also recommended
-sending the 2–4% of photos below 0.9 confidence to the existing LLM.
+<h1 align="center">trainwright</h1>
 
 <p align="center">
-  <img src="docs/assets/car_parts_samples.jpg" width="430" alt="sample photos per class">
-  <img src="docs/assets/car_parts_confusion.png" width="330" alt="validation confusion matrix">
+  <strong>Train, evaluate and ship small task-specific models, built to be driven by AI coding agents.</strong>
 </p>
-<p align="center"><img src="docs/assets/car_parts_curves.png" width="900" alt="training curves"></p>
-<p align="center"><sub>Photos: <a href="https://huggingface.co/datasets/stevenalbert10/Toyota-Corolla-Car-Parts">Toyota Corolla car parts</a> (Apache-2.0).</sub></p>
 
-There is also an MCP server (`claude mcp add trainwright -- trainwright mcp`) exposing the same steps as tools.
+<p align="center">
+  <a href="https://github.com/djcopp/trainwright/actions/workflows/ci.yml"><img src="https://github.com/djcopp/trainwright/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/pytorch-2.2%2B-ee4c2c" alt="PyTorch 2.2+">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="Apache-2.0"></a>
+</p>
 
-## Use it yourself
+---
+
+Many production LLM calls are narrow, repetitive jobs: routing a ticket, classifying a photo,
+scoring a record. A model trained for that one task is often as accurate, hundreds to thousands of
+times cheaper to run, and much faster.
+
+trainwright is a PyTorch framework for building those models, built around the ML lifecycle.
+In the spirit of PyTorch Lightning it standardises the training loop, data handling and
+experiment tracking. Every command also works as a step an agent can follow: it returns
+structured output, enforces the order of the lifecycle, diagnoses each run and proposes the next
+experiment. That way a coding agent produces the same disciplined result a careful ML engineer would.
+
+## Highlights
+
+- **Opinionated lifecycle.** Profile, frozen split, baselines, hypothesis-driven experiments,
+  a sealed test set, a production refit, export and a cost benchmark, all from one CLI.
+- **Built-in leakage controls.** Duplicate- and near-duplicate-aware splits, detection of entity
+  keys (users, sessions, assignments), and a test ledger that flags reuse.
+- **Strong defaults per modality.** Tabular MLPs with periodic embeddings; fine-tuned or
+  linear-probed vision backbones (ResNet, ConvNeXt, DINOv2); pretrained text encoders (bge, MiniLM).
+- **Noise-aware decisions.** Bootstrap standard errors on every score, tie detection on the
+  leaderboard, seed-spread reporting and greedy-weighted ensembles.
+- **Plain-file experiment tracking.** Every run records its config, hypothesis, metrics, curves,
+  diagnosis, git SHA, data fingerprint and split hash. No server required.
+- **Deployable output.** Single-file ONNX bundles with a parity check, a torch-free runtime, a
+  generated FastAPI server, Dockerfile and model card.
+- **Agent integration.** A Claude Code skill, `AGENTS.md`, an MCP server, `--json` on every
+  command and a `next:` hint after every step.
+- **LLM distillation.** Label data with Claude under a spend cap, rank likely label errors and
+  apply tracked corrections.
+
+## Installation
 
 ```bash
-trainwright init --data tickets.csv --target intent   # infers task, modality and the right metric
-trainwright profile                                   # leakage, duplicates, group keys, imbalance, ids
-trainwright split                                     # frozen, stratified, duplicate-aware
-trainwright baseline                                  # dummy / linear / gradient boosting / tf-idf
-trainwright train --hypothesis "default recipe"
-trainwright diagnose latest                           # findings + ready-to-run next experiments
-trainwright train --from-run 004 -o model.params.dropout=0.3 --hypothesis "regularise the gap seen in 004"
-trainwright tune --budget 20m                         # successive-halving recipe search
-trainwright ensemble --seeds 3                        # seed replicas + greedy-weighted ensemble
-trainwright runs                                      # leaderboard with ±standard errors, ≈ marks ties
-trainwright evaluate best --split test --reason "final model"
-trainwright finalize best                             # retrain the chosen recipe on train+val
-trainwright export <final-run> && trainwright benchmark <final-run> && trainwright report
-trainwright predict <run> -i new.csv --out predictions.csv
+uv add "trainwright[all]"
+# or
+pip install "trainwright[all]"
 ```
 
-Every command takes `--json` and ends with `next:` suggestions. `trainwright status` shows where a
-project is in the lifecycle at any time.
+| extra | adds |
+|---|---|
+| `vision` | torchvision backbones and image I/O |
+| `text` | Hugging Face encoders and tokenizers (bge, MiniLM, DINOv2) |
+| `onnx`, `serve` | ONNX export and the FastAPI server |
+| `label` | LLM labelling via the Anthropic API |
+| `mcp` | Model Context Protocol server |
 
-### Feature engineering lives in `features.py`
+Requires Python 3.10+. CUDA, Apple Silicon (MPS) and CPU are detected automatically.
+
+## Quickstart
+
+```bash
+trainwright init --data tickets.csv --target intent    # infer task, modality and metric
+trainwright profile                                    # data checks and recommendations
+trainwright split                                      # freeze train / val / test
+trainwright baseline                                   # reference models on the same split
+trainwright train --hypothesis "default recipe"        # first neural run
+trainwright diagnose latest                            # findings and suggested next runs
+trainwright evaluate best --split test --reason "final model"
+trainwright finalize best                              # production model on all usable data
+trainwright export <final-run> && trainwright benchmark <final-run>
+```
+
+Run `trainwright status` at any point to see where the project stands and what to do next.
+
+## Using trainwright with coding agents
+
+Install the agent instructions into a repository once:
+
+```bash
+trainwright agent-setup        # AGENTS.md, a CLAUDE.md import and a Claude Code skill
+```
+
+Then make requests in plain language:
+
+> *We identify car parts in engine-bay photos with a Sonnet agent and it's getting expensive.
+> The labelled photos are in `images/`. Can we train a smaller model that runs cheaply in the cloud?*
+
+The skill gives the agent a playbook to follow, and each command's output tells it what to do
+next. An abridged excerpt from a recorded session:
+
+```text
+$ trainwright profile
+  * 67% of examples have a duplicate or near-duplicate (422 groups). The split keeps each group
+    inside one split so scores are not inflated by near-copies.
+$ trainwright train --hypothesis "default resnet18 recipe beats pixel baseline"
+run 003-image-pretrained: best val_macro_f1=0.9704 at epoch 2/7
+  - [warning] early_peak: validation got worse immediately after epoch 2. LR is likely too high.
+$ trainwright train --from-run 003 -o optim.lr=0.000333 --hypothesis "lower LR preserves pretrained features"
+#   run                         kind      val_macro_f1    params  time
+1   004-image-pretrained        neural    0.9835 ±0.0072  11.18M  119s
+2≈  003-image-pretrained        neural    0.9704 ±0.0244  11.18M  57s
+3   002-baseline-pixels-linear  baseline  0.7307 ±0.0613  -       0s
+$ trainwright evaluate best --split test --reason "final model"
+004-image-pretrained on test (n=175): macro_f1=0.9955
+$ trainwright benchmark 005-final-004-image-pretrained
+cost per 1M predictions (estimate): small model $4.89 · claude-sonnet-5-5 $4,000
+```
+
+<p align="center">
+  <img src="docs/assets/car_parts_samples.jpg" width="430" alt="Sample photos per class">
+  <img src="docs/assets/car_parts_confusion.png" width="330" alt="Validation confusion matrix">
+</p>
+<p align="center"><img src="docs/assets/car_parts_curves.png" width="880" alt="Training curves"></p>
+<p align="center"><sub>Data: <a href="https://huggingface.co/datasets/stevenalbert10/Toyota-Corolla-Car-Parts">Toyota Corolla car parts</a> (Apache-2.0). Full walkthrough: <a href="examples/car_parts">examples/car_parts</a>.</sub></p>
+
+To use it over MCP instead, register the server with `claude mcp add trainwright -- trainwright mcp`.
+
+## Core concepts
+
+| concept | what it means |
+|---|---|
+| **Project** | A directory with `trainwright.yaml`: data location, target, task, modality and the single primary metric. |
+| **Frozen split** | Train / val / test fixed once, with a data fingerprint. Stratified, grouped or chronological. Duplicates never straddle splits. |
+| **Run** | One training (or baseline, ensemble or production) job, stored under `runs/<id>/`, with its hypothesis and parent run. |
+| **Diagnosis** | Automatic reading of the training curves: overfitting, non-convergence, instability, calibration, comparison with baselines. Each finding comes with concrete overrides. |
+| **Sealed test set** | Model selection happens on val. Test is evaluated once per final model and every access is logged. |
+| **Production model** | `finalize` retrains the chosen recipe on train + val (+ test once it has been scored). Its reported metrics are its parent run's held-out scores. |
+| **Bundle** | The exported artefact: ONNX model(s), preprocessing state, runtime, server, Dockerfile and model card. |
+
+## Command reference
+
+| command | purpose |
+|---|---|
+| `init` | Create a project from a CSV/Parquet file, image folder or manifest. |
+| `profile` | Types, missingness, leakage suspects, duplicates, entity keys, imbalance, recommendations. |
+| `split` | Freeze the duplicate-aware train / val / test split. |
+| `baseline` | Dummy, linear, gradient-boosting, TF-IDF or pixel baselines on the same split. |
+| `train` | Train a model; `--from-run` and `-o key=value` for controlled follow-ups. |
+| `diagnose` | Curve diagnosis with ready-to-run next experiments. |
+| `tune` | Successive-halving search around the best recipe. |
+| `ensemble` | Greedy-weighted ensemble of top runs, optionally with seed replicas. |
+| `features` | Permutation feature importance on val (tabular). |
+| `runs`, `show`, `status` | Leaderboard with standard errors, run details, lifecycle checklist. |
+| `evaluate` | Error analysis on val, or the one-time final evaluation on test. |
+| `finalize` | Retrain the chosen run on all usable data. |
+| `export`, `serve`, `predict` | Build the deployable bundle, serve it, or predict files with it. |
+| `benchmark` | Latency, throughput and cost per million predictions compared with an LLM call. |
+| `label`, `review` | Label with an LLM under a spend cap; rank and correct likely label errors. |
+| `report` | Write `reports/REPORT.md` covering data, experiments, evaluation and cost. |
+| `models`, `schema`, `guide`, `agent-setup`, `mcp` | Model catalogue, config schema, agent playbook, agent files, MCP server. |
+
+Every command accepts `--json`. `trainwright <command> --help` lists all options.
+
+## Configuration
+
+`trainwright init` writes a validated `trainwright.yaml`:
+
+```yaml
+name: tickets
+task: classification          # or regression
+modality: text                # tabular | image | text
+data:
+  path: tickets.csv
+  target: intent
+  text_column: message
+  drop: []                    # columns never used as features
+  group_column: null          # keep entities in one split
+  time_column: null           # chronological split
+split: {strategy: auto, val: 0.15, test: 0.15, seed: 42, dedup: true}
+metric: macro_f1
+metric_mode: max
+cost:                         # assumptions used by `benchmark`
+  instance_usd_per_hour: 0.05
+  llm_name: claude-sonnet-5-5
+  llm_usd_per_mtok_input: 2.0
+  llm_usd_per_mtok_output: 10.0
+```
+
+Experiment settings use per-modality defaults and are overridden per run, for example
+`-o optim.lr=3e-4 -o model.params.backbone=dinov2_small`. Unknown keys are rejected.
+`trainwright schema` prints every option.
+
+## Extending
+
+**Feature engineering.** Put a `features.py` next to `trainwright.yaml`. It is fitted on the
+train split only, applied everywhere (including baselines and serving), and versioned with each run.
 
 ```python
 import pandas as pd
 
-def fit(train: pd.DataFrame) -> dict:                       # sees the TRAIN split only
+def fit(train: pd.DataFrame) -> dict:
     return {"store_mean": train.groupby("store")["basket"].mean().to_dict()}
 
-def transform(df: pd.DataFrame, state: dict) -> pd.DataFrame:   # also runs at serving time
+def transform(df: pd.DataFrame, state: dict) -> pd.DataFrame:
     df = df.copy()
     df["store_mean"] = df["store"].map(state["store_mean"])
     return df
 ```
 
-It's fitted on train only, applied to every split and to the baselines, hashed into each run, and
-shipped (source plus fitted state) inside the exported bundle.
+**Custom architectures.** Register a module in the project's `models.py`, then train it with
+`-o model.name=my_net`:
 
-## What's inside
+```python
+import torch
+import trainwright as tw
 
-| | |
-|---|---|
-| **Data** | CSV/Parquet tables, image folders or manifests, text columns. Numpy-only preprocessing (quantile-normalised numerics, categorical vocabularies, word n-gram or HF tokenizers) fitted on train only and shipped inside the bundle. |
-| **Splits** | Frozen once per project with a data fingerprint. Stratified, group or time-based. **Duplicate-aware by default.** `profile` flags entity keys (users, sessions, assignments) and asks whether predictions will be for seen or unseen groups. |
-| **Baselines** | Dummy, linear, early-stopped HistGradientBoosting (tabular), TF-IDF + logistic (text), pixel-linear (images), recorded as runs on the same split and metrics, and shippable. |
-| **Models** | `tabular_mlp` (categorical embeddings, periodic numeric embeddings, residual blocks), `image_pretrained` (ResNet, MobileNetV3, EfficientNet, ConvNeXt, DINOv2; fine-tune or linear probe), `image_cnn`, `text_pretrained` (MiniLM, bge or any HF encoder), `text_bag`, `text_cnn`. Switching model also applies that model's recipe (e.g. a 20× lower encoder LR). Register your own in `models.py`. |
-| **Training** | One `Trainer`: AMP, gradient clipping and accumulation, cosine/one-cycle with warm-up, discriminative LR for pretrained backbones, early stopping, wall-clock budgets, non-finite-loss detection, best checkpointing, on-device image augmentation, cached image decoding. |
-| **Tracking** | Plain files, no server: `runs/<id>/{meta.json, config.yaml, metrics.jsonl, summary.json, diagnosis.json, curves.png, checkpoints/}` with hypothesis, parent run, git SHA, environment, data fingerprint, split hash, `features.py` hash and label-correction hash. |
-| **Diagnosis** | Overfitting vs over-confidence, generalisation gap, non-convergence, instability, early peaks, divergence, collapse, weak minority classes, calibration, baseline wins and ties, all **noise-aware** (bootstrap standard errors). Each finding comes with concrete overrides and ready-to-run commands. |
-| **Ensembles** | `ensemble` picks members from the top runs by greedy forward selection on val log-loss (Caruana et al.), adds seed replicas on request and reports the seed spread. Ensembles evaluate, finalize and export like any run (a bundle of bundles averaged by the runtime). |
-| **Evaluation** | Per-class report, confusions, worst examples (an image grid for vision), and accuracy vs coverage for routing low-confidence cases to an LLM. Confidences are temperature-calibrated on val. The test split is sealed: every access is logged and reuse is flagged. |
-| **Deployment** | `finalize` (refit on train+val), ONNX export with a parity check, a torch-free runtime (numpy + onnxruntime), a generated FastAPI server, Dockerfile and model card. `benchmark` measures latency and throughput and estimates $/1M predictions against the LLM call it replaces, with every assumption printed. |
-| **Distillation** | `label` labels data with Claude under a hard spend cap. `review` ranks likely label errors and can ask a stronger model to adjudicate them blind. `data.corrections` applies fixes without breaking the split. |
+@tw.register_model("my_net", modality="tabular", recipe={"optim.lr": 3e-3})
+class MyNet(torch.nn.Module):
+    def __init__(self, spec, hidden=128):
+        super().__init__()
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(spec["n_num"], hidden), torch.nn.ReLU(), torch.nn.Linear(hidden, spec["n_outputs"])
+        )
+
+    def forward(self, x_num, x_cat):
+        return self.net(x_num)
+```
+
+## Deployment
+
+```text
+artifacts/<run>/
+├── model.onnx            # or one sub-bundle per member for ensembles
+├── bundle.json           # preprocessing state, classes, metrics, provenance
+├── tw_runtime/           # numpy + onnxruntime inference, no torch
+├── server.py             # FastAPI: /health, /metadata, /predict
+├── Dockerfile
+├── requirements.txt
+└── MODEL_CARD.md
+```
+
+```bash
+trainwright serve <run>                      # local server
+docker build -t my-model artifacts/<run>     # container
+trainwright predict <run> -i new.csv --out predictions.csv
+```
+
+`trainwright benchmark` reports latency, model-only and end-to-end throughput, and estimated
+cost per million predictions against the LLM call being replaced, printing every assumption it uses.
 
 ## Python API
 
-The building blocks work on their own, Lightning-style:
+The training primitives can be used directly:
 
 ```python
 import trainwright as tw
@@ -179,34 +252,44 @@ import trainwright as tw
 task = tw.ClassificationTask(MyNet(), n_classes=10)
 train = tw.TensorLoader({"x": x_train, "y": y_train}, batch_size=64, shuffle=True)
 val = tw.TensorLoader({"x": x_val, "y": y_val}, batch_size=256)
+
 trainer = tw.Trainer(max_epochs=30, monitor="val_accuracy", mode="max", patience=5)
 result = trainer.fit(task, train, val)
 ```
 
-Batches are dicts: `"y"` is the target, and every other key is passed to `forward` as a keyword argument.
+Batches are dictionaries: `"y"` is the target and every other key is passed to `forward` as a
+keyword argument.
 
-## Examples
+## Benchmarks
 
-- [examples/car_parts](examples/car_parts): replace a vision-LLM call with a small image classifier.
-- [examples/banking77](examples/banking77): replace an LLM intent router; distil from LLM labels with `label` and `review`.
+trainwright is evaluated with an A/B harness. Claude Code receives the same request on public
+datasets, once with only a standard Python ML environment (the straight prompt) and once with
+trainwright. Both are scored on a 15% holdout neither agent ever sees, with two or more runs per
+condition.
+
+<!-- RESULTS_TABLE -->
+
+Method, per-round results and the changes each round produced are documented in
+[docs/agent-trials.md](docs/agent-trials.md). Reproduce with `bench/agent_trials.py`.
 
 ## Limitations
 
-- Single-machine training; no distributed or multi-GPU support yet.
-- Classification and regression only (no detection, segmentation, multi-label or generation).
-- Cost figures are estimates from your own assumptions in `trainwright.yaml`, not quotes.
-- The agent trials are small (one run per condition, four datasets) and show what happened, not a
-  statistical guarantee. The harness is included so you can run your own.
+- Single-machine training; no distributed or multi-GPU support.
+- Classification and regression only: no detection, segmentation, multi-label or generation.
+- Cost figures are estimates derived from the assumptions in `trainwright.yaml`.
+- The agent benchmark covers four datasets with a few runs per condition. It shows behaviour,
+  not a statistical guarantee.
 
 ## Development
 
 ```bash
 uv sync --all-extras
-uv run pytest                     # unit + end-to-end lifecycle tests for every modality
+uv run pytest                         # unit and end-to-end tests for every modality
 uv run ruff check src tests && uv run mypy src
-uv run python bench/agent_trials.py --help   # the agent A/B harness
 ```
 
-## Licence
+Contributions are welcome. Please open an issue to discuss significant changes first.
 
-Apache-2.0
+## License
+
+[Apache-2.0](LICENSE)
