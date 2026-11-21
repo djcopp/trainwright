@@ -35,7 +35,7 @@ def build_server() -> Any:
     try:  # mcp >= 2
         from mcp.server.mcpserver import MCPServer as Server
     except ImportError:  # mcp 1.x
-        from mcp.server.fastmcp import FastMCP as Server  # type: ignore[no-redef]
+        from mcp.server.fastmcp import FastMCP as Server  # type: ignore[no-redef,attr-defined,unused-ignore]
 
     srv = Server("trainwright")
 
