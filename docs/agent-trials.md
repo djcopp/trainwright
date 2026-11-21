@@ -179,7 +179,25 @@ dwarfed validation-sample noise. On test, the three-seed average (0.819) matched
 playbook asks agents to use their whole budget (features, other model families, tune, then a seed
 ensemble) rather than stopping after the first pass.
 
-<!-- ROUND5 -->
+## Round 5 (v0.4.0): replicates for both conditions
+
+Single runs turned out to be misleading, so every task now has two straight-prompt (control) runs and
+two trainwright runs. trainwright 0.4.0 added greedy-weighted ensembles with seed replicas,
+and its playbook asks agents to spend their whole budget improving the model.
+
+- **The straight prompt is inconsistent.** Its two eye_movements runs scored **0.908 and 0.696**:
+  one found the per-assignment feature trick and the other didn't. Its superconduct runs scored
+  RMSE 9.60 and 10.16. trainwright's runs landed within 0.011 accuracy and 0.075 RMSE of each
+  other, because `profile` surfaces the group key every time and the lifecycle is the same.
+- **Agents used the new steps** on tabular tasks (`features.py` → `tune` → `ensemble --seeds 3`).
+- **New failure found:** agents went `evaluate --split test` → `predict`, skipping `finalize`, so
+  their predictions came from models trained on about 70% of the data. In banking77 one agent spent
+  its budget on a single fine-tune. Fixed in 0.4.1: `predict` uses the finalized model automatically,
+  the next step after a test evaluation is `finalize`, and the default text encoder is bge-small
+  (the control's choice in both of its runs).
+
+<!-- ROUND6 -->
+
 
 
 
