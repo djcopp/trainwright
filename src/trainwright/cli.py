@@ -472,9 +472,16 @@ def split(
     project.ensure_dirs()
     sp, created = ensure_split(project, force=force)
     summ = split_summary(sp)
+    dd = sp.get("dedup") or {}
+    dd_msg = (
+        f"\n  duplicate-aware: {dd['items_with_duplicates']} examples in near-duplicate groups kept within one split"
+        if dd.get("items_with_duplicates")
+        else ""
+    )
     msg = (
         f"{'froze new' if created else 'existing'} {sp['strategy']} split: {sp['counts']} (hash {sp['split_hash']})"
         + ("" if created else "  (use --force to re-split)")
+        + dd_msg
     )
     emit(
         summ,
@@ -887,7 +894,7 @@ def evaluate(
 # --------------------------------------------------------------------------- deploy
 
 
-def _bundle_dir(project: Any, ref: str) -> Path:
+def _bundle_dir(project: Any, ref: str, auto_export: bool = False) -> Path:
     p = Path(ref)
     if (p / "bundle.json").exists():
         return p
@@ -895,6 +902,11 @@ def _bundle_dir(project: Any, ref: str) -> Path:
 
     run = resolve_ref(project, ref)
     d = project.artifacts_dir / run.id
+    if not (d / "bundle.json").exists() and auto_export:
+        from .export import export_run
+
+        progress(f"exporting {run.id} first...")
+        export_run(project, run)
     if not (d / "bundle.json").exists():
         raise CLIError(
             f"{run.id} has not been exported.", f"Run `trainwright export {run.id}` first."
@@ -981,33 +993,74 @@ def predict(
     input_: Path = typer.Option(
         ..., "--input", "-i", help="JSON list / CSV / text file (one per line) / image."
     ),
-    limit: int = typer.Option(20),
+    out_path: Path | None = typer.Option(
+        None, "--out", "-o", help="Write ALL predictions to this CSV (id, prediction, confidence)."
+    ),
+    limit: int = typer.Option(20, help="Rows to print when --out is not given."),
 ) -> None:
-    """Predict with an exported bundle (exactly what the server would return)."""
+    """Predict with a run's exported bundle (exported automatically if needed).
+
+    Input: CSV/Parquet (tabular or text column), JSON list, text file (one per line),
+    an image file, or a folder of images (recursively).
+    """
+    import csv
+
+    from .preprocessing import IMAGE_EXTENSIONS
     from .runtime import Predictor
 
     STATE["command"] = "predict"
     project = _project()
-    pred = Predictor(_bundle_dir(project, ref))
+    pred = Predictor(_bundle_dir(project, ref, auto_export=True))
     suf = input_.suffix.lower()
-    if suf == ".json":
+    ids: list[str]
+    if input_.is_dir():
+        files = sorted(
+            f for f in input_.rglob("*") if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
+        )
+        items: list[Any] = [str(f) for f in files]
+        ids = [str(f.relative_to(input_)) for f in files]
+    elif suf == ".json":
         data = json.loads(input_.read_text())
         items = data["instances"] if isinstance(data, dict) else data
-    elif suf in (".csv", ".parquet", ".tsv"):
+        ids = [str(i) for i in range(len(items))]
+    elif suf in (".csv", ".parquet", ".tsv", ".pq", ".jsonl"):
         from .data.records import read_table
 
         df = read_table(input_)
-        items = (
-            df.astype(object).where(df.notna(), None).to_dict(orient="records")
-            if pred.modality == "tabular"
-            else df[project.config.data.text_column].astype(str).tolist()
-        )
+        if pred.modality == "tabular":
+            items = df.astype(object).where(df.notna(), None).to_dict(orient="records")
+        else:
+            col = project.config.data.text_column or project.config.data.image_column
+            if col not in df.columns:
+                raise CLIError(
+                    f"Column {col!r} not in {input_.name}", f"Columns: {list(df.columns)}"
+                )
+            items = df[col].astype(str).tolist()
+        ids = [str(i) for i in range(len(items))]
     elif pred.modality == "image":
-        items = [str(input_)]
+        items, ids = [str(input_)], [input_.name]
     else:
         items = [line for line in input_.read_text().splitlines() if line.strip()]
-    out = pred.predict(items[:limit])
-    emit(out, "\n".join(json.dumps(o) for o in out))
+        ids = [str(i) for i in range(len(items))]
+    if out_path is None:
+        out = pred.predict(items[:limit])
+        emit(out, "\n".join(json.dumps(o) for o in out))
+        return
+    rows = []
+    for i in range(0, len(items), 512):
+        rows += pred.predict(items[i : i + 512])
+    with out_path.open("w", newline="") as f:
+        w = csv.writer(f)
+        if pred.task == "classification":
+            w.writerow(["id", "prediction", "confidence"])
+            w.writerows([ids[k], r["label"], f"{r['confidence']:.5f}"] for k, r in enumerate(rows))
+        else:
+            w.writerow(["id", "prediction"])
+            w.writerows([ids[k], r["prediction"]] for k, r in enumerate(rows))
+    emit(
+        {"path": str(out_path), "n": len(rows)},
+        f"wrote {len(rows)} predictions to {_rel(out_path)}",
+    )
 
 
 @app.command()
