@@ -465,7 +465,7 @@ class TextCNN(nn.Module):
 @register_model(
     "text_pretrained",
     modality="text",
-    description="Small pretrained transformer encoder (default MiniLM-L6, 22M params) + mean pooling + "
+    description="Small pretrained transformer encoder (default bge-small-en-v1.5, 33M params) + mean pooling + "
     "linear head, fine-tuned end-to-end. Needs `trainwright[text]`.",
     when_to_use="Best accuracy for text classification when wording varies (paraphrases, few examples "
     "per class). ~5-20 ms per message on CPU; still orders of magnitude cheaper than an LLM call.",
@@ -484,7 +484,7 @@ class TextPretrained(nn.Module):
     def __init__(
         self,
         spec: dict[str, Any],
-        encoder: str = "sentence-transformers/all-MiniLM-L6-v2",
+        encoder: str = "BAAI/bge-small-en-v1.5",
         dropout: float = 0.1,
         max_length: int = 128,
         pretrained: bool = True,

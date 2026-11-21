@@ -132,9 +132,10 @@ residual MLP, AdamW + cosine, early stopping.
 6. Tiny / non-photo images (icons, scans, <=64px) → `model.name=image_cnn`.
 7. Open `runs/<id>/eval/val_errors.png` to see mistakes; mislabelled data is common (`trainwright review`).
 
-**Text** (`text_pretrained`: fine-tuned MiniLM, when `trainwright[text]` is installed; else `text_bag`).
+**Text** (`text_pretrained`: fine-tuned bge-small, when `trainwright[text]` is installed; else `text_bag`).
 1. Compare against `tfidf_linear`: it's strong on small data.
-2. More accuracy → `model.params.encoder=BAAI/bge-small-en-v1.5` (33M) or another small HF encoder.
+2. Faster/smaller → `model.params.encoder=sentence-transformers/all-MiniLM-L6-v2` (22M); more accuracy → `BAAI/bge-base-en-v1.5`.
+   Text models train slowly on CPU/MPS: set `train.time_budget`, then `finalize` (it retrains, so budget for it).
 3. Need microsecond inference or no transformers → `model.name=text_bag` / `text_cnn`.
 
 ## Distilling an LLM

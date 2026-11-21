@@ -181,7 +181,7 @@ class ProjectDataModule(DataModule):
             elif self.exp.model.name == "text_pretrained":
                 params = self.exp.model.params
                 self.pre = HFTokenizer(
-                    params.get("encoder", "sentence-transformers/all-MiniLM-L6-v2"),
+                    params.get("encoder", "BAAI/bge-small-en-v1.5"),
                     int(params.get("max_length", 128)),
                 ).fit([])
             else:
