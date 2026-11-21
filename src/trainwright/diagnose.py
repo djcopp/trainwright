@@ -429,7 +429,8 @@ def diagnose_history(
         )
 
     # 10. calibration --------------------------------------------------------------
-    ece = val.get("ece")
+    cal = summary.get("calibration") or {}
+    ece = cal.get("ece_after", val.get("ece"))
     if isinstance(ece, float) and ece > 0.1:
         add(
             "poorly_calibrated",

@@ -138,6 +138,7 @@ class ClassificationTask(Task):
         super().__init__(model, optim)
         self.n_classes = n_classes
         self.label_smoothing = label_smoothing
+        self.temperature = 1.0  # fitted on val after training (temperature scaling)
         self.register_buffer("class_weights", class_weights if class_weights is not None else None)
 
     def loss(self, outputs: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -149,6 +150,7 @@ class ClassificationTask(Task):
         )
 
     def postprocess(self, outputs: np.ndarray) -> np.ndarray:
+        outputs = outputs / self.temperature
         z = outputs - outputs.max(axis=1, keepdims=True)
         e = np.exp(z)
         return e / e.sum(axis=1, keepdims=True)

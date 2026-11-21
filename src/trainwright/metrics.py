@@ -229,3 +229,34 @@ def bootstrap_se(
         if np.isfinite(v):
             vals.append(v)
     return float(np.std(vals, ddof=1)) if len(vals) > 10 else float("nan")
+
+
+def fit_temperature(logits: np.ndarray, y: np.ndarray) -> float:
+    """Temperature scaling (Guo et al., 2017): one scalar T minimising NLL of softmax(logits / T).
+
+    Leaves the argmax (accuracy) unchanged; fixes over/under-confidence.
+    """
+    z = np.asarray(logits, dtype=np.float64)
+    y = np.asarray(y).astype(int)
+
+    def nll(log_t: float) -> float:
+        s = z / np.exp(log_t)
+        s = s - s.max(axis=1, keepdims=True)
+        logp = s - np.log(np.exp(s).sum(axis=1, keepdims=True))
+        return float(-logp[np.arange(len(y)), y].mean())
+
+    lo, hi = np.log(0.05), np.log(20.0)
+    g = (np.sqrt(5) - 1) / 2
+    a, b = hi - g * (hi - lo), lo + g * (hi - lo)
+    fa, fb = nll(a), nll(b)
+    for _ in range(60):
+        if fa < fb:
+            hi, b, fb = b, a, fa
+            a = hi - g * (hi - lo)
+            fa = nll(a)
+        else:
+            lo, a, fa = a, b, fb
+            b = lo + g * (hi - lo)
+            fb = nll(b)
+    t = float(np.exp((lo + hi) / 2))
+    return t if nll(np.log(t)) <= nll(0.0) else 1.0
