@@ -202,7 +202,7 @@ def test_schema_and_models(tabular_project):
     assert np.isfinite(1.0)
 
 
-FEATURES_PY = '''
+FEATURES_PY = """
 import pandas as pd
 
 def fit(train):
@@ -213,7 +213,7 @@ def transform(df, state):
     df["colour_a_mean"] = df["colour"].astype(str).map(state["colour_rate"]).astype(float)
     df["a_times_b"] = df["a"] * df["b"]
     return df
-'''
+"""
 
 
 def test_feature_hook_is_fitted_tracked_and_shipped(tabular_project):
@@ -237,7 +237,9 @@ def test_feature_hook_is_fitted_tracked_and_shipped(tabular_project):
     # the sklearn baseline bundle applies the same hook
     gbm = [r for r in tw("runs")["result"] if r["model"] == "baseline:hist_gbm"][0]["id"]
     bexp = tw("export", gbm)["result"]
-    assert Predictor(bexp["dir"]).predict([{"a": 1.0, "b": 2.0, "c": 0.0, "d": 0.0, "colour": "red"}])
+    assert Predictor(bexp["dir"]).predict(
+        [{"a": 1.0, "b": 2.0, "c": 0.0, "d": 0.0, "colour": "red"}]
+    )
     assert tw("features", rid, "--repeats", "1")["result"]["importances"]
 
 
@@ -250,7 +252,9 @@ def test_finalize_trains_on_train_plus_val(tabular_project):
     assert any("no test evaluation" in w for w in fin["warnings"])
     fid = fin["result"]["run"]
     meta = json.loads((tw.root / "runs" / fid / "meta.json").read_text())
-    assert meta["kind"] == "final" and meta["trained_on"] == ["train", "val"] and meta["parent"] == rid
+    assert (
+        meta["kind"] == "final" and meta["trained_on"] == ["train", "val"] and meta["parent"] == rid
+    )
     assert fid not in [r["id"] for r in tw("runs")["result"]]  # val score is not held out
     bad = tw("evaluate", fid, "--split", "val", ok=False)
     assert bad.get("ok") is False or bad.get("exception") is not None

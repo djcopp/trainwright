@@ -69,11 +69,13 @@ Validation must mimic how the model will be used, or every number is wrong.
 ```python
 import pandas as pd
 
-def fit(train: pd.DataFrame) -> dict:          # optional; sees the TRAIN split only
+
+def fit(train: pd.DataFrame) -> dict:  # optional; sees the TRAIN split only
     g = train.groupby("assgNo")[["fixcount", "totalFixDur"]].mean()
     return {"assg_means": {str(k): v for k, v in g.to_dict(orient="index").items()}}
 
-def transform(df: pd.DataFrame, state: dict) -> pd.DataFrame:   # must work on one row too
+
+def transform(df: pd.DataFrame, state: dict) -> pd.DataFrame:  # must work on one row too
     df = df.copy()
     means = pd.DataFrame.from_dict(state["assg_means"], orient="index")
     for c in means.columns:
@@ -128,13 +130,17 @@ Create `models.py` in the project root; it is imported automatically:
 ```python
 import torch, trainwright as tw
 
+
 @tw.register_model("my_mlp", modality="tabular", description="...")
 class MyMLP(torch.nn.Module):
     def __init__(self, spec, hidden=128):
         super().__init__()
         d = spec["n_num"] + 8 * len(spec["cat_cardinalities"])
         self.embs = torch.nn.ModuleList(torch.nn.Embedding(c, 8) for c in spec["cat_cardinalities"])
-        self.net = torch.nn.Sequential(torch.nn.Linear(d, hidden), torch.nn.ReLU(), torch.nn.Linear(hidden, spec["n_outputs"]))
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(d, hidden), torch.nn.ReLU(), torch.nn.Linear(hidden, spec["n_outputs"])
+        )
+
     def forward(self, x_num, x_cat):
         parts = [x_num] + [e(x_cat[:, i]) for i, e in enumerate(self.embs)]
         return self.net(torch.cat(parts, 1))

@@ -106,12 +106,16 @@ def status(project: Project) -> dict[str, Any]:
             "evaluate the single selected model on test exactly once",
         )
     )
-    finals = [r for r in runs if r.meta.get("kind") == "final" and r.meta.get("status") == "completed"]
+    finals = [
+        r for r in runs if r.meta.get("kind") == "final" and r.meta.get("status") == "completed"
+    ]
     steps.append(
         _step(
             "finalize",
             bool(finals),
-            f"production model(s): {[r.id for r in finals]}" if finals else "no production model yet",
+            f"production model(s): {[r.id for r in finals]}"
+            if finals
+            else "no production model yet",
             f"trainwright finalize {best_neural['id'] if best_neural else '<run>'}",
             "retrain the chosen recipe on train+val for the production model",
         )
