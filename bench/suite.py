@@ -40,6 +40,21 @@ def _get(url: str) -> Any:
         return json.load(r)
 
 
+def _download(url: str, dest: Path, timeout: float = 120, tries: int = 3) -> None:
+    """Download with a socket timeout and retries (urlretrieve can hang forever)."""
+    last: Exception | None = None
+    for _ in range(tries):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r, dest.open("wb") as f:
+                while chunk := r.read(1 << 20):
+                    f.write(chunk)
+            return
+        except Exception as e:
+            last = e
+            time.sleep(3)
+    raise RuntimeError(f"download failed after {tries} tries: {last}")
+
+
 def prepare(out: Path, suites: list[str]) -> None:
     import pandas as pd
 
@@ -85,7 +100,7 @@ def prepare(out: Path, suites: list[str]) -> None:
                     meta["skipped"] = f"too large for the CPU benchmark ({rows}x{cols})"
                 else:
                     pq = d / "raw.pq"
-                    urllib.request.urlretrieve(desc["parquet_url"], pq)
+                    _download(desc["parquet_url"], pq)
                     df = pd.read_parquet(pq)
                     df.columns = [str(c).replace(" ", "_") for c in df.columns]
                     meta["target"] = str(meta["target"]).replace(" ", "_")
