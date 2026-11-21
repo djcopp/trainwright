@@ -196,7 +196,30 @@ and its playbook asks agents to spend their whole budget improving the model.
   the next step after a test evaluation is `finalize`, and the default text encoder is bge-small
   (the control's choice in both of its runs).
 
-<!-- ROUND6 -->
+## Round 6 (v0.4.1: banking77 ×2, superconduct ×1)
+
+| task | metric | trainwright r6 | control (2 runs) |
+|---|---|---|---|
+| superconduct | RMSE ↓ | **9.571** (best of any run in either condition) | 9.598, 10.156 |
+| banking77 | accuracy | 0.932, 0.927 | 0.931, 0.937 |
+
+banking77 is now within noise (holdout SE ≈ 0.006), but the transcripts showed why it wasn't
+ahead. Both agents started with the new bge-small default, but with a 7-minute budget only 2
+epochs fit (val 0.895), so they fell back to MiniLM. The cause was speed: every message was padded
+to 128 tokens (mean length 16) and training ran in fp32.
+
+### Changes made because of round 6
+
+| finding | change |
+|---|---|
+| fixed 128-token padding on 16-token messages | `max_length` sized automatically to the train set (multiple of 16 above p99) |
+| fp32 on Apple Silicon | automatic bf16 on MPS for models over 5M parameters (capability-probed) |
+
+Together: a bge-small epoch went from 90 s to 26 s at equal accuracy. A full default run now
+reaches 0.930 val macro-F1 in 4.2 minutes.
+
+<!-- ROUND7 -->
+
 
 
 
