@@ -385,7 +385,7 @@ def summary_table(tasks: Path, trial_dirs: list[Path], tw_tags: list[str]) -> st
         ]
         better = None
         if ctrl and tw:
-            better = (
+            better = bool(
                 (np.mean(tw) < np.mean(ctrl)) if key == "rmse" else (np.mean(tw) > np.mean(ctrl))
             )
         tw_cell = _fmt(tw)
