@@ -31,9 +31,13 @@ vision = ["torchvision>=0.17", "pillow>=10.0"]
 serve = ["fastapi>=0.110", "uvicorn>=0.29"]
 onnx = ["onnx>=1.16", "onnxruntime>=1.18", "onnxscript>=0.1"]
 mcp = ["mcp>=1.2"]
-all = ["trainwright[vision,serve,onnx,mcp,label]"]
+all = ["trainwright[vision,serve,onnx,mcp,label,text]"]
 label = [
     "anthropic>=1.0",
+]
+text = [
+    "tokenizers>=0.19",
+    "transformers>=4.44",
 ]
 
 [project.scripts]

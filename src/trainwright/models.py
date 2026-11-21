@@ -37,6 +37,7 @@ class ModelInfo:
     description: str = ""
     when_to_use: str = ""
     defaults: dict[str, Any] = field(default_factory=dict)
+    recipe: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +46,7 @@ class ModelInfo:
             "description": self.description,
             "when_to_use": self.when_to_use,
             "params": self.defaults,
+            "recipe": self.recipe,
         }
 
 
@@ -52,8 +54,15 @@ _REGISTRY: dict[str, ModelInfo] = {}
 
 
 def register_model(
-    name: str, modality: str, description: str = "", when_to_use: str = ""
+    name: str,
+    modality: str,
+    description: str = "",
+    when_to_use: str = "",
+    recipe: dict[str, Any] | None = None,
 ) -> Callable[[Any], Any]:
+    """Register an architecture. ``recipe`` holds dotted overrides (e.g. ``{"optim.lr": 3e-5}``)
+    applied automatically whenever an experiment switches to this model."""
+
     def deco(obj: Any) -> Any:
         sig = inspect.signature(obj)
         defaults = {
@@ -61,7 +70,9 @@ def register_model(
             for k, v in sig.parameters.items()
             if k != "spec" and v.default is not inspect.Parameter.empty
         }
-        _REGISTRY[name] = ModelInfo(name, modality, obj, description, when_to_use, defaults)
+        _REGISTRY[name] = ModelInfo(
+            name, modality, obj, description, when_to_use, defaults, dict(recipe or {})
+        )
         return obj
 
     return deco
@@ -301,6 +312,13 @@ class ImagePretrained(nn.Module):
     description="Small from-scratch CNN (conv-bn-relu stages + global pooling).",
     when_to_use="Tiny or non-photographic images (icons, scans, spectrograms, <=64px) where ImageNet "
     "features don't transfer, or when the model must be a few hundred KB.",
+    recipe={
+        "optim.lr": 3e-3,
+        "optim.weight_decay": 1e-4,
+        "train.max_epochs": 40,
+        "train.patience": 10,
+        "train.label_smoothing": 0.0,
+    },
 )
 class ImageCNN(nn.Module):
     def __init__(
@@ -400,3 +418,57 @@ class TextCNN(nn.Module):
             h = h.masked_fill(~mask, -1e4).amax(-1)
             feats.append(h)
         return self.head(self.drop(torch.cat(feats, dim=1)))
+
+
+# --------------------------------------------------------------------------- pretrained text
+
+
+@register_model(
+    "text_pretrained",
+    modality="text",
+    description="Small pretrained transformer encoder (default MiniLM-L6, 22M params) + mean pooling + "
+    "linear head, fine-tuned end-to-end. Needs `trainwright[text]`.",
+    when_to_use="Best accuracy for text classification when wording varies (paraphrases, few examples "
+    "per class). ~5-20 ms per message on CPU; still orders of magnitude cheaper than an LLM call.",
+    recipe={
+        "optim.lr": 1e-3,
+        "optim.backbone_lr_mult": 0.05,
+        "optim.weight_decay": 0.01,
+        "train.max_epochs": 8,
+        "train.batch_size": 32,
+        "train.patience": 3,
+        "train.label_smoothing": 0.0,
+        "train.grad_clip": 1.0,
+    },
+)
+class TextPretrained(nn.Module):
+    def __init__(
+        self,
+        spec: dict[str, Any],
+        encoder: str = "sentence-transformers/all-MiniLM-L6-v2",
+        dropout: float = 0.1,
+        max_length: int = 128,
+        pretrained: bool = True,
+    ):
+        super().__init__()
+        try:
+            from transformers import AutoConfig, AutoModel
+        except ImportError as e:  # pragma: no cover
+            raise ImportError(
+                "text_pretrained needs transformers: `uv add 'trainwright[text]'`"
+            ) from e
+        if pretrained:
+            self.backbone = AutoModel.from_pretrained(encoder)
+        else:
+            self.backbone = AutoModel.from_config(AutoConfig.from_pretrained(encoder))
+        self.pretrained_backbone = pretrained
+        self.pad_id = int(spec.get("pad_id", 0))
+        d = int(self.backbone.config.hidden_size)
+        self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(d, int(spec.get("n_outputs", 1))))
+
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        mask = (tokens != self.pad_id).long()
+        h = self.backbone(input_ids=tokens, attention_mask=mask).last_hidden_state
+        m = mask.unsqueeze(-1).to(h.dtype)
+        pooled = (h * m).sum(1) / m.sum(1).clamp(min=1.0)
+        return self.head(pooled)

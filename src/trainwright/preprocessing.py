@@ -374,6 +374,66 @@ class TextTokenizer:
         return obj
 
 
+class HFTokenizer:
+    """Wraps a Hugging Face ``tokenizers`` tokenizer (state = its JSON, so bundles are self-contained)."""
+
+    def __init__(self, name: str = "", max_tokens: int = 128, tokenizer_json: str | None = None):
+        self.name = name
+        self.max_tokens = max_tokens
+        self.tokenizer_json = tokenizer_json
+        self._tok: Any = None
+        self.pad_id = 0
+
+    def _load(self) -> Any:
+        if self._tok is None:
+            from tokenizers import Tokenizer
+
+            tok = (
+                Tokenizer.from_str(self.tokenizer_json)
+                if self.tokenizer_json
+                else Tokenizer.from_pretrained(self.name)
+            )
+            self.tokenizer_json = tok.to_str()
+            pad = tok.token_to_id("[PAD]")
+            if pad is None:
+                pad = tok.token_to_id("<pad>")
+            self.pad_id = int(pad or 0)
+            tok.enable_truncation(self.max_tokens)
+            tok.enable_padding(pad_id=self.pad_id, length=self.max_tokens)
+            self._tok = tok
+        return self._tok
+
+    def fit(self, texts: list[str]) -> HFTokenizer:
+        self._load()
+        return self
+
+    @property
+    def vocab_size(self) -> int:
+        return int(self._load().get_vocab_size())
+
+    def encode(self, texts: list[str]) -> np.ndarray:
+        enc = self._load().encode_batch([t if isinstance(t, str) else str(t) for t in texts])
+        return np.asarray([e.ids for e in enc], dtype=np.int64)
+
+    def state_dict(self) -> dict[str, Any]:
+        self._load()
+        return {
+            "type": "hf_text",
+            "name": self.name,
+            "max_tokens": self.max_tokens,
+            "tokenizer_json": self.tokenizer_json,
+            "pad_id": self.pad_id,
+        }
+
+    @classmethod
+    def from_state(cls, s: dict[str, Any]) -> HFTokenizer:
+        return cls(s["name"], s["max_tokens"], s["tokenizer_json"])
+
+
+def text_preprocessor_from_state(s: dict[str, Any]) -> Any:
+    return HFTokenizer.from_state(s) if s.get("type") == "hf_text" else TextTokenizer.from_state(s)
+
+
 # --------------------------------------------------------------------------- image
 
 

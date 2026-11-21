@@ -22,7 +22,7 @@ from .preprocessing import (
     ImagePreprocessor,
     TabularPreprocessor,
     TargetScaler,
-    TextTokenizer,
+    text_preprocessor_from_state,
 )
 
 
@@ -45,7 +45,7 @@ class Predictor:
         if self.modality == "tabular":
             self.pre: Any = TabularPreprocessor.from_state(feats)
         elif self.modality == "text":
-            self.pre = TextTokenizer.from_state(feats)
+            self.pre = text_preprocessor_from_state(feats)
         else:
             self.pre = ImagePreprocessor.from_state(feats)
         import onnxruntime as ort

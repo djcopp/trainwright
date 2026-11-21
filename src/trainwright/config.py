@@ -290,6 +290,7 @@ def resolve_experiment(
             data["model"]["name"],
         ):
             data["model"]["params"] = {}
+            data = apply_overrides(data, _model_recipe(file_data["model"]["name"]))
         data = deep_merge(data, file_data)
     if overrides:
         ov = (
@@ -297,6 +298,7 @@ def resolve_experiment(
         )
         if "model.name" in ov and ov["model.name"] != data["model"]["name"]:
             data["model"]["params"] = {}
+            data = apply_overrides(data, _model_recipe(ov["model.name"]))
         data = apply_overrides(data, ov)
     try:
         return ExperimentConfig.model_validate(data)
@@ -306,6 +308,16 @@ def resolve_experiment(
 
 class ConfigError(ValueError):
     pass
+
+
+def _model_recipe(name: str) -> dict[str, Any]:
+    """The registered model's recommended overrides (empty for unknown/custom models)."""
+    try:
+        from .models import get_model_info
+
+        return dict(get_model_info(name).recipe)
+    except KeyError:
+        return {}
 
 
 def format_validation_error(e: ValidationError) -> str:

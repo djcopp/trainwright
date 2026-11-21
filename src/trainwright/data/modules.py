@@ -26,11 +26,13 @@ import torch.nn.functional as F
 
 from ..config import ExperimentConfig, ProjectConfig
 from ..preprocessing import (
+    HFTokenizer,
     LabelEncoder,
     TabularPreprocessor,
     TargetScaler,
     TextTokenizer,
     load_image,
+    text_preprocessor_from_state,
 )
 from .records import Records
 
@@ -164,7 +166,13 @@ class ProjectDataModule(DataModule):
             self._spec = dict(self.pre.spec)
         elif self.modality == "text":
             if state:
-                self.pre = TextTokenizer.from_state(state["features"])
+                self.pre = text_preprocessor_from_state(state["features"])
+            elif self.exp.model.name == "text_pretrained":
+                params = self.exp.model.params
+                self.pre = HFTokenizer(
+                    params.get("encoder", "sentence-transformers/all-MiniLM-L6-v2"),
+                    int(params.get("max_length", 128)),
+                ).fit([])
             else:
                 self.pre = TextTokenizer(
                     pp.max_vocab, pp.ngrams, pp.max_tokens, pp.lowercase, pp.min_token_freq
@@ -175,7 +183,11 @@ class ProjectDataModule(DataModule):
                     "tokens": torch.from_numpy(self.pre.encode(recs.texts or [])).to(self.device),
                     "y": torch.from_numpy(self._targets(recs)).to(self.device),
                 }
-            self._spec = {"vocab_size": self.pre.vocab_size, "max_tokens": pp.max_tokens}
+            self._spec = {
+                "vocab_size": self.pre.vocab_size,
+                "max_tokens": self.pre.max_tokens,
+                "pad_id": getattr(self.pre, "pad_id", 0),
+            }
         elif self.modality == "image":
             size = pp.image_size
             self.pre = None

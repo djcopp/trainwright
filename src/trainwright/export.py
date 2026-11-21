@@ -184,8 +184,10 @@ def export_run(
             spec=ckpt["spec"],
             **info,
         )
-        reqs = ["numpy", "onnxruntime", "fastapi", "uvicorn"] + (
-            ["pillow", "python-multipart"] if cfg.modality == "image" else []
+        reqs = (
+            ["numpy", "onnxruntime", "fastapi", "uvicorn"]
+            + (["pillow", "python-multipart"] if cfg.modality == "image" else [])
+            + (["tokenizers"] if ckpt["preprocessor"]["features"].get("type") == "hf_text" else [])
         )
     rt = out / "tw_runtime"
     rt.mkdir()
