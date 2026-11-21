@@ -170,3 +170,62 @@ def top_confusions(cm: np.ndarray, classes: list[str], k: int = 10) -> list[dict
             }
         )
     return out
+
+
+def _single_metric(task: str, metric: str, y: np.ndarray, out: np.ndarray, n_classes: int) -> float:
+    """Fast path for the metrics used in model selection (used by the bootstrap)."""
+    if task == "classification":
+        pred = out.argmax(1)
+        if metric == "accuracy":
+            return float((pred == y).mean())
+        if metric in ("macro_f1", "balanced_accuracy"):
+            present = np.unique(y)
+            cm = confusion(y, pred, n_classes)
+            tp = np.diag(cm).astype(float)
+            support = cm.sum(1).astype(float)
+            if metric == "balanced_accuracy":
+                return float((tp[present] / support[present]).mean())
+            predicted = cm.sum(0).astype(float)
+            prec = np.divide(tp, predicted, out=np.zeros_like(tp), where=predicted > 0)
+            rec = np.divide(tp, support, out=np.zeros_like(tp), where=support > 0)
+            f1 = np.divide(
+                2 * prec * rec, prec + rec, out=np.zeros_like(tp), where=(prec + rec) > 0
+            )
+            return float(f1[present].mean())
+        return compute_metrics(task, y, out, n_classes, outputs_are_probs=True).get(
+            metric, float("nan")
+        )
+    return regression_metrics(y, out)[metric]
+
+
+def bootstrap_se(
+    task: str,
+    metric: str,
+    y: np.ndarray,
+    outputs: np.ndarray,
+    n_classes: int | None = None,
+    n_boot: int = 200,
+    seed: int = 0,
+    max_rows: int = 20000,
+) -> float:
+    """Bootstrap standard error of a validation metric: how much of a score difference is noise.
+
+    ``outputs`` are probabilities [N, K] (classification) or predictions [N] (regression).
+    """
+    y = np.asarray(y)
+    outputs = np.asarray(outputs)
+    n = len(y)
+    if n < 10:
+        return float("nan")
+    rng = np.random.default_rng(seed)
+    k = n_classes or (outputs.shape[1] if outputs.ndim == 2 else 1)
+    vals = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, size=min(n, max_rows))
+        try:
+            v = _single_metric(task, metric, y[idx], outputs[idx], k)
+        except ValueError:
+            continue
+        if np.isfinite(v):
+            vals.append(v)
+    return float(np.std(vals, ddof=1)) if len(vals) > 10 else float("nan")

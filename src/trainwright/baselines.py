@@ -15,7 +15,7 @@ import numpy as np
 
 from ._utils import write_json
 from .data.records import Records
-from .metrics import compute_metrics
+from .metrics import bootstrap_se, compute_metrics
 from .pipeline import get_records, monitor_key, require_split
 from .preprocessing import LabelEncoder, TabularPreprocessor, load_image
 from .project import Project
@@ -215,8 +215,10 @@ def run_baselines(
                 "classification", y_tr, tr_out, len(classes or []), outputs_are_probs=True
             )
         else:
-            metrics = compute_metrics("regression", y_va, model.predict(Xva))
+            out = model.predict(Xva)
+            metrics = compute_metrics("regression", y_va, out)
             tr_metrics = compute_metrics("regression", y_tr, model.predict(Xtr))
+        val_se = bootstrap_se(task, cfg.metric, y_va, out, len(classes or []) or None)
         elapsed = time.time() - t0
         run = Run.create(
             project.runs_dir,
@@ -257,6 +259,7 @@ def run_baselines(
                 "split_hash": split["split_hash"],
                 "n_train": len(y_tr),
                 "n_val": len(y_va),
+                "val_se": {cfg.metric: val_se},
             }
         )
         write_json(run.diagnosis_path, {"verdict": "baseline", "findings": []})

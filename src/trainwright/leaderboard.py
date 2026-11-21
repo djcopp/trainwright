@@ -21,6 +21,7 @@ def run_row(run: Run, metric: str, current_split: str | None) -> dict[str, Any]:
         "hypothesis": meta.get("hypothesis"),
         "parent": meta.get("parent"),
         f"val_{metric}": val.get(metric),
+        "val_se": (summ.get("val_se") or {}).get(metric),
         "val_loss": None,
         "n_params": summ.get("n_params"),
         "train_time_s": summ.get("train_time_s"),
@@ -72,6 +73,14 @@ def leaderboard(
     rows.sort(key=sort_key)
     for i, r in enumerate(rows, 1):
         r["rank"] = i
+    # mark runs statistically tied with the leader (within 2 combined standard errors)
+    if rows and rows[0].get(key) is not None:
+        lead, lse = rows[0][key], rows[0].get("val_se") or 0.0
+        for r in rows[1:]:
+            v, se = r.get(key), r.get("val_se") or 0.0
+            if v is None or not (lse or se):
+                continue
+            r["tied_with_leader"] = bool(abs(lead - v) <= 2 * math.sqrt(lse**2 + se**2))
     return rows
 
 
@@ -105,16 +114,18 @@ def format_table(rows: list[dict[str, Any]], metric: str, limit: int = 30) -> st
     lines = []
     for r in rows[:limit]:
         v = r.get(key)
+        se = r.get("val_se")
         ep = f"{r['best_epoch']}/{r['epochs_run']}" if r.get("best_epoch") else "-"
         params = f"{r['n_params'] / 1e6:.2f}M" if r.get("n_params") else "-"
         t = f"{r['train_time_s']:.0f}s" if r.get("train_time_s") is not None else "-"
         diag = ",".join(r.get("findings") or []) or (r.get("diagnosis") or "-")
         flag = "" if r.get("same_split") in (True, None) else " (old split)"
         cells = [
-            str(r["rank"]),
+            str(r["rank"]) + ("≈" if r.get("tied_with_leader") else ""),
             r["id"] + flag,
             r["kind"] or "-",
-            f"{v:.4f}" if v is not None else "-",
+            (f"{v:.4f}" if v is not None else "-")
+            + (f" ±{se:.4f}" if isinstance(se, float) and math.isfinite(se) else ""),
             params,
             t,
             ep,
@@ -127,4 +138,6 @@ def format_table(rows: list[dict[str, Any]], metric: str, limit: int = 30) -> st
     widths = [max(len(h), *(len(c[i]) for c in lines)) for i, h in enumerate(header)]
     out = ["  ".join(h.ljust(w) for h, w in zip(header, widths))]
     out += ["  ".join(c.ljust(w) for c, w in zip(cells, widths)) for cells in lines]
+    if any(r.get("tied_with_leader") for r in rows[:limit]):
+        out.append("≈ = within 2 standard errors of #1: the difference is likely noise")
     return "\n".join(out)

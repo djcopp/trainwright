@@ -199,6 +199,8 @@ def diagnose_history(
 
     n = len(history)
     stop = summary.get("stop_reason", "") or ""
+    se_raw = (summary.get("val_se") or {}).get(metric)
+    se = float(se_raw) if isinstance(se_raw, (int, float)) and se_raw is not None else float("nan")
     lr = S.get("optim.lr", 1e-3)
     if n == 0:
         add(
@@ -353,7 +355,12 @@ def diagnose_history(
         flips = sum(1 for i in range(len(diffs) - 1) if diffs[i] * diffs[i + 1] < 0)
         amp = sorted(abs(d) for d in diffs)[len(diffs) // 2]
         scale = max(1e-9, max(fvm) - min(fvm))
-        if flips >= 0.6 * (len(diffs) - 1) and (amp > 0.01 if bounded else amp / scale > 0.25):
+        noise_floor = 2 * se if math.isfinite(se) else 0.0
+        if (
+            flips >= 0.6 * (len(diffs) - 1)
+            and amp > noise_floor
+            and (amp > 0.01 if bounded else amp / scale > 0.25)
+        ):
             add(
                 "unstable",
                 "warning",
@@ -411,6 +418,17 @@ def diagnose_history(
             else [],
         )
 
+    # 10b. noisy validation ----------------------------------------------------------
+    if math.isfinite(se) and (se > 0.01 if bounded else False):
+        add(
+            "noisy_validation",
+            "info",
+            f"The val {metric} has a bootstrap standard error of ±{se:.3f} ({summary.get('n_val', '?')} examples): "
+            f"differences smaller than ~{2 * se:.3f} between runs are noise. Don't chase them; prefer the simpler/"
+            "cheaper model among tied runs, or enlarge the validation set (split.val) before fine-tuning further.",
+            se=round(se, 5),
+        )
+
     # 11. baseline comparison ----------------------------------------------------------
     score = val.get(metric)
     if baseline is None:
@@ -424,7 +442,23 @@ def diagnose_history(
         bscore = baseline.get(f"val_{metric}")
         if isinstance(bscore, (int, float)):
             delta = (score - bscore) if mode == "max" else (bscore - score)
-            if delta < 0:
+            bse = baseline.get("val_se") or 0.0
+            tie_band = 2 * math.sqrt(
+                (se if math.isfinite(se) else 0.0) ** 2 + (bse if math.isfinite(bse) else 0.0) ** 2
+            )
+            if tie_band > 0 and abs(delta) <= tie_band:
+                add(
+                    "tied_with_baseline",
+                    "warning" if delta < 0 else "info",
+                    f"Statistically tied with baseline {baseline['id']} ({baseline.get('model')}): "
+                    f"{_fmt(score)} vs {_fmt(bscore)} (difference {_fmt(delta)}, noise band ±{_fmt(tie_band)}). "
+                    "If the baseline is cheaper to serve, it may be the better choice; otherwise push the neural "
+                    "model further before claiming a win.",
+                    S.capacity()[:2],
+                    baseline=baseline["id"],
+                    delta=round(delta, 5),
+                )
+            elif delta < 0:
                 sugg = S.capacity() + [
                     S.s("train.max_epochs", int(S.get("train.max_epochs", 50)) * 2, "train longer")
                 ]

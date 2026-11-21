@@ -176,6 +176,15 @@ def train(
         )
         result = trainer.fit(task, datamodule=dm)
         best = result.best_row
+        val_se = float("nan")
+        if result.best_row:  # best weights are restored: measure how noisy the val metric is
+            from .metrics import bootstrap_se
+
+            raw, yv, _ = trainer.predict_raw(task, dm.dataloader("val", train=False))
+            yv_eval = dm.target_scaler.decode(yv) if dm.target_scaler is not None else yv
+            val_se = bootstrap_se(
+                cfg.task, cfg.metric, yv_eval, task.postprocess(raw), len(dm.classes or []) or None
+            )
         summary = {
             "kind": "neural",
             "model": exp.model.name,
@@ -193,6 +202,7 @@ def train(
             "split_hash": split["split_hash"],
             "n_train": dm.n("train"),
             "n_val": dm.n("val"),
+            "val_se": {cfg.metric: val_se},
         }
         if not result.best_row:
             summary["error"] = "no epoch produced a finite validation score"

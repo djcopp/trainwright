@@ -295,3 +295,43 @@ def test_duplicate_aware_split_never_straddles():
         members = [str(i) for i in np.flatnonzero(groups == g)]
         assert len({where[m] for m in members}) == 1
     assert s["counts"]["val"] > 0 and s["counts"]["test"] > 0
+
+
+def test_bootstrap_se_matches_binomial_theory():
+    from trainwright.metrics import bootstrap_se
+
+    rng = np.random.default_rng(0)
+    n = 2000
+    y = rng.integers(0, 2, n)
+    correct = rng.random(n) < 0.8
+    pred = np.where(correct, y, 1 - y)
+    probs = np.eye(2)[pred]
+    se = bootstrap_se("classification", "accuracy", y, probs, 2, n_boot=400)
+    assert abs(se - np.sqrt(0.8 * 0.2 / n)) < 0.003
+
+
+def test_diagnose_reports_tie_with_baseline():
+    h = _hist([1.0, 0.8, 0.7], [1.0, 0.8, 0.7], [0.80, 0.81, 0.82])
+    d = diagnose_history(
+        h,
+        {
+            "best_epoch": 3,
+            "stop_reason": "early stopping",
+            "val": {"accuracy": 0.82},
+            "val_se": {"accuracy": 0.01},
+        },
+        {"model": {"params": {}}},
+        "accuracy",
+        "max",
+        "tabular",
+        "classification",
+        2,
+        baseline={
+            "id": "002-b",
+            "model": "baseline:hist_gbm",
+            "val_accuracy": 0.83,
+            "val_se": 0.01,
+        },
+    )
+    codes = [f["code"] for f in d["findings"]]
+    assert "tied_with_baseline" in codes and "baseline_wins" not in codes
