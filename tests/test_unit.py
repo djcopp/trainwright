@@ -335,3 +335,24 @@ def test_diagnose_reports_tie_with_baseline():
     )
     codes = [f["code"] for f in d["findings"]]
     assert "tied_with_baseline" in codes and "baseline_wins" not in codes
+
+
+def test_group_scan_flags_entity_keys_not_measurements():
+    from trainwright.data.profile import _group_scan
+
+    rng = np.random.default_rng(0)
+    n, k = 3000, 100
+    user = rng.integers(0, k, n)
+    user_effect = rng.normal(size=k)[user]  # rows of one user share context
+    df = pd.DataFrame(
+        {
+            "userId": user,
+            "f1": user_effect + rng.normal(scale=0.5, size=n),
+            "f2": user_effect * 2 + rng.normal(scale=0.5, size=n),
+            "duration": rng.integers(0, 300, n),  # integer measurement, not a key
+            "colourNo": rng.integers(0, 8, n),  # key-like name but carries no shared context
+        }
+    )
+    y = (df["f1"] > 0).astype(int).to_numpy()
+    flagged = [g["column"] for g in _group_scan(df, y, "classification")]
+    assert flagged == ["userId"]
