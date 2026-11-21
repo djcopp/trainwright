@@ -218,7 +218,31 @@ to 128 tokens (mean length 16) and training ran in fp32.
 Together: a bge-small epoch went from 90 s to 26 s at equal accuracy. A full default run now
 reaches 0.930 val macro-F1 in 4.2 minutes.
 
-<!-- ROUND7 -->
+## Round 7 (v0.4.2: banking77 ×2)
+
+With automatic sequence length and bf16 on Apple Silicon (bge-small epochs 90 s → 26 s), both
+agents fine-tuned bge-small, finalized and predicted with the production model. Scores: **0.932
+and 0.933**, against the control's 0.931 and 0.937. That's a statistical tie (difference ≈ 0.4 SE).
+
+## Summary across rounds 5–7 (trainwright 0.4.x vs the straight prompt)
+
+| task | metric | straight prompt (2 runs) | trainwright 0.4.x |
+|---|---|---|---|
+| eye_movements | accuracy | 0.802 (0.696–0.908) | **0.853** (0.848–0.859), 2 runs |
+| superconduct | RMSE ↓ | 9.88 (9.60–10.16) | **9.77** (9.57–9.91), 3 runs |
+| banking77 | accuracy | **0.934** (0.931–0.937) | 0.927 (0.914–0.933), 6 runs; 0.932–0.933 on 0.4.2 |
+| car_parts | accuracy | 0.996 | **1.000** (1.000–1.000), 2 runs |
+
+Averaged over tasks: +1.8% on the primary metric, the worst run +5.7% better, and a median
+13.5% fewer errors.
+
+## Next: scale
+
+Four datasets are too few for firm claims. `bench/suite.py` runs trainwright's automated pipeline,
+with no LLM involved, on the 107 datasets of OpenML-CC18 and OpenML-CTR23 against early-stopped
+HistGradientBoosting. `bench/agent_trials.py prepare-suite` and `batch --max-trials N` run the agent A/B on
+the same datasets in capped, resumable chunks.
+
 
 
 

@@ -30,7 +30,7 @@ holdouts across four public datasets (tabular, image and text) with repeated run
 
 | | |
 |---|---|
-| **Better results** | wins **3 of 4** tasks, **+1.7%** on the primary metric on average |
+| **Better results** | wins **3 of 4** tasks and ties the fourth on the latest release, **+1.8%** on the primary metric on average |
 | **Fewer errors** | **13.5% fewer** prediction errors (median across tasks) |
 | **Reliable worst case** | worst run **+5.7%** better on average; run-to-run spread down from 21 points to about 1 on the hardest task |
 | **Same agent cost** | **$0.15–0.23** per task vs $0.13–0.29 |
@@ -287,9 +287,11 @@ condition.
 | Reading-relevance prediction | [eye_movements](https://www.openml.org/d/1044), tabular | accuracy | 0.802 (0.696–0.908) | **0.853** (0.848–0.859) | **+5.1 pts** mean, **+15.2 pts** worst case |
 | Critical temperature | [superconduct](https://www.openml.org/d/44148), tabular | RMSE ↓ | 9.88 (9.60–10.16) | **9.77** (9.57–9.91) | **−1.1%** mean, **−2.4%** worst case |
 | Car-part recognition | [car parts](https://huggingface.co/datasets/stevenalbert10/Toyota-Corolla-Car-Parts), photos | accuracy | 0.996 | **1.000** | 1 error → 0 of 260 |
-| Support-intent routing | [banking77](https://huggingface.co/datasets/PolyAI/banking77), text | accuracy | **0.934** (0.931–0.937) | 0.925 (0.914–0.932) | −0.9 pts (within ~1.5 SE) |
+| Support-intent routing | [banking77](https://huggingface.co/datasets/PolyAI/banking77), text | accuracy | **0.934** (0.931–0.937) | 0.927 (0.914–0.933) | −0.7 pts overall; tied on the latest release (0.932, 0.933) |
 
-banking77 is the one task where the straight prompt is still ahead, by about 1.5 standard errors.
+On banking77 the straight prompt is ahead on average across all 0.4.x releases. The two runs on 0.4.2, after text training was made 3× faster, are tied with it (0.932 and 0.933 vs 0.931 and 0.937).
+
+A larger, LLM-free benchmark of the automated pipeline on 107 OpenML datasets (CC18 + CTR23) is in `bench/suite.py`.
 
 Method, per-round results and the changes each round produced are documented in
 [docs/agent-trials.md](docs/agent-trials.md). Reproduce with `bench/agent_trials.py`.
