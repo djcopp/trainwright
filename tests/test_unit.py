@@ -398,3 +398,23 @@ def test_mcp_server_exposes_lifecycle_tools():
         "evaluate",
         "export",
     } <= names
+
+
+def test_greedy_ensemble_weights_drop_useless_members():
+    from trainwright.ensemble import _greedy_weights
+    from trainwright.metrics import compute_metrics
+
+    rng = np.random.default_rng(0)
+    n = 2000
+    y = rng.integers(0, 2, n)
+
+    def noisy(strength):
+        p = np.clip(0.5 + (y - 0.5) * strength + rng.normal(scale=0.25, size=n), 0.01, 0.99)
+        return np.stack([1 - p, p], 1)
+
+    good_a, good_b, junk = noisy(0.6), noisy(0.6), np.full((n, 2), 0.5)
+    obj = lambda o: compute_metrics("classification", y, o, 2, outputs_are_probs=True)["log_loss"]  # noqa: E731
+    w = _greedy_weights([good_a, good_b, junk], obj)
+    assert (
+        w[0] > 0 and w[1] > 0 and w[2] == 0
+    )  # two independent good models combine; junk is ignored

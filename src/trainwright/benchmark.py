@@ -63,8 +63,7 @@ def benchmark_bundle(
         mt = _time_calls(lambda: pred.session.run(None, feats), min_iters=5, min_seconds=2.0)
         model_only = batch_size / float(np.median(mt))
 
-    model_file = bundle_dir / ("model.onnx" if meta.get("kind") == "onnx" else "model.joblib")
-    size_mb = sum(f.stat().st_size for f in bundle_dir.glob(model_file.name + "*")) / 1e6
+    size_mb = sum(f.stat().st_size for f in bundle_dir.rglob("model.*") if f.is_file()) / 1e6
 
     eff_tput = throughput / cost.cpu_slowdown_factor * cost.instance_utilisation
     usd_per_m_small = cost.instance_usd_per_hour / (eff_tput * 3600) * 1e6

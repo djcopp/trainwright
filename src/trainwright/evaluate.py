@@ -113,7 +113,16 @@ def evaluate(
             f"run {run.meta.get('parent')}'s held-out numbers."
         )
     paths = np.array([])
-    if kind == "baseline" or (run.dir / "model.joblib").exists():
+    if run.meta.get("members"):
+        from .ensemble import ensemble_outputs
+
+        outputs, y = ensemble_outputs(project, run, split)
+        recs_e = get_records(project).subset(require_split(project, get_records(project))[split])
+        ids = recs_e.ids
+        if recs_e.paths is not None:
+            paths = np.array([str(p) for p in recs_e.paths])
+        loss = None
+    elif kind == "baseline" or (run.dir / "model.joblib").exists():
         outputs, y, ids, paths = _baseline_outputs(project, run, split)
         loss = None
     else:
@@ -140,7 +149,7 @@ def evaluate(
     if cfg.task == "classification":
         sp = (
             require_split(project, get_records(project))
-            if kind == "baseline" or (run.dir / "model.joblib").exists()
+            if kind == "baseline" or (run.dir / "model.joblib").exists() or run.meta.get("members")
             else {"classes": res["dm"].classes}
         )
         classes: list[str] = sp["classes"]

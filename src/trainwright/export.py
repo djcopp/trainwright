@@ -171,7 +171,30 @@ def export_run(
         "git": meta.get("git"),
         "hypothesis": meta.get("hypothesis"),
     }
-    if meta.get("kind") == "baseline" or (run.dir / "model.joblib").exists():
+    if meta.get("members"):
+        # ensemble: one sub-bundle per member, averaged by the runtime
+        reqs_set: set[str] = set()
+        rel = []
+        for mid in meta["members"]:
+            sub = out / "members" / mid
+            export_run(project, Run(project.runs_dir / mid), sub)
+            reqs_set.update((sub / "requirements.txt").read_text().split())
+            for shared in ("server.py", "Dockerfile", "requirements.txt", "tw_runtime"):
+                target = sub / shared
+                if target.is_dir():
+                    shutil.rmtree(target)
+                elif target.exists():
+                    target.unlink()
+            rel.append(f"members/{mid}")
+        bundle.update(
+            kind="ensemble",
+            model=meta.get("model"),
+            members=rel,
+            weights=meta["weights"],
+            preprocessor={"features": {"type": cfg.modality}},
+        )
+        reqs = sorted(reqs_set)
+    elif meta.get("kind") == "baseline" or (run.dir / "model.joblib").exists():
         if cfg.modality == "image":
             raise LifecycleError(
                 "Image baselines are reference points only and cannot be exported."

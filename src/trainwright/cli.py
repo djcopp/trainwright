@@ -970,6 +970,48 @@ def finalize(
     )
 
 
+@app.command()
+def ensemble(
+    refs: list[str] = typer.Argument(None, help="Member runs (default: the top runs on val)."),
+    top: int = typer.Option(6, help="Candidate pool: this many top runs on val."),
+    seeds: int = typer.Option(1, help="Also train N-1 seed replicas of the best neural run first."),
+) -> None:
+    """Average the best runs' calibrated predictions; recorded as a run that competes on the leaderboard."""
+    from .ensemble import build_ensemble
+    from .leaderboard import format_table, leaderboard
+
+    STATE["command"] = "ensemble"
+    project = _project()
+    run = build_ensemble(project, refs or None, top, seeds, progress=progress)
+    if run is None:
+        emit(
+            {"run": None},
+            "no ensemble beat the best single run on val; keep the single model",
+            [{"command": "trainwright runs", "why": "the leader stays the final candidate"}],
+        )
+        return
+    summ = run.summary
+    m = project.config.metric
+    rows = leaderboard(project)
+    emit(
+        {"run": run.id, "summary": summ},
+        "\n".join(
+            [
+                f"{run.id}: weights {dict(zip(summ['members'], summ['weights']))} "
+                f"(chosen on val {summ['selection_metric']})",
+                "",
+                format_table(rows, m, 8),
+            ]
+        ),
+        [
+            {
+                "command": f'trainwright evaluate {run.id} --split test --reason "final model"',
+                "why": "if the ensemble leads (and isn't just tied), make it the final model",
+            }
+        ],
+    )
+
+
 # --------------------------------------------------------------------------- deploy
 
 

@@ -283,3 +283,27 @@ def test_finalize_a_baseline_and_ship_it(regression_project):
     from trainwright.runtime import Predictor
 
     assert Predictor(exp["dir"]).predict([{"x1": 0.0, "x2": 0.0, "x3": 0.0}])[0]["prediction"] > 0
+
+
+def test_ensemble_build_evaluate_finalize_export(tabular_project):
+    tw = tabular_project
+    tw("init", "--data", "data.csv")
+    tw("split")
+    tw("baseline", "--only", "dummy,hist_gbm")
+    tw("train", *FAST, "-o", "train.max_epochs=4", "-H", "mlp")
+    ens = tw("ensemble", "--seeds", "2")["result"]
+    eid = ens["run"]
+    members = ens["summary"]["members"]
+    assert len(members) >= 2 and not any("dummy" in m for m in members)
+    assert ens["summary"]["seed_spread"]["n"] == 2
+    assert eid in [r["id"] for r in tw("runs")["result"]]
+    test = tw("evaluate", eid, "--split", "test", "--reason", "ensemble")["result"]
+    assert test["metrics"]["roc_auc"] > 0.8
+    fid = tw("finalize", eid)["result"]["run"]
+    exp = tw("export", fid)["result"]
+    from trainwright.runtime import Predictor
+
+    out = Predictor(exp["dir"]).predict(
+        [{"a": 1.0, "b": 0.0, "c": None, "d": 0.0, "colour": "red"}]
+    )
+    assert out[0]["label"] in ("yes", "no") and 0 <= out[0]["confidence"] <= 1

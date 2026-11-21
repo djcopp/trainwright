@@ -34,6 +34,12 @@ class Predictor:
         self.task: str = self.meta["task"]
         self.classes: list[str] | None = self.meta.get("classes")
         self.kind: str = self.meta.get("kind", "onnx")
+        if self.kind == "ensemble":
+            self.members = [Predictor(self.dir / m, threads) for m in self.meta["members"]]
+            self.weights = np.asarray(self.meta["weights"], dtype=np.float64)
+            self.weights = self.weights / self.weights.sum()
+            self.target = None
+            return
         pre = self.meta["preprocessor"]
         feats = pre["features"]
         self.target = TargetScaler.from_state(pre["target"]) if pre.get("target") else None
@@ -91,8 +97,20 @@ class Predictor:
             return self._sklearn_raw(instances)
         return self.session.run(None, self.featurise(instances))[0]
 
-    def predict(self, instances: list[Any], top_k: int = 3) -> list[dict[str, Any]]:
+    def predict_values(self, instances: list[Any]) -> np.ndarray:
+        """Probabilities [N, K] (classification) or target-scale predictions [N] (regression)."""
+        if self.kind == "ensemble":
+            return sum(w * m.predict_values(instances) for w, m in zip(self.weights, self.members))
         out = self.predict_raw(instances)
+        if self.task == "classification":
+            return np.asarray(out, dtype=np.float64)
+        vals = np.asarray(out, dtype=np.float64).reshape(-1)
+        if self.target is not None and self.kind != "sklearn":
+            vals = self.target.decode(vals)
+        return vals
+
+    def predict(self, instances: list[Any], top_k: int = 3) -> list[dict[str, Any]]:
+        out = self.predict_values(instances)
         if self.task == "classification":
             assert self.classes is not None
             results = []
@@ -106,10 +124,7 @@ class Predictor:
                     }
                 )
             return results
-        vals = out.reshape(-1)
-        if self.target is not None and self.kind != "sklearn":
-            vals = self.target.decode(vals)
-        return [{"prediction": float(v)} for v in vals]
+        return [{"prediction": float(v)} for v in out.reshape(-1)]
 
     def _sklearn_raw(self, instances: list[Any]) -> np.ndarray:
         if self.modality == "tabular":

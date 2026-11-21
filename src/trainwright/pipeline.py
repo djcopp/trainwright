@@ -386,6 +386,8 @@ def finalize(
     """
     import yaml
 
+    if run.meta.get("members"):
+        return _finalize_ensemble(project, run, include_test, progress)
     if run.meta.get("kind") == "baseline":
         from .baselines import refit_baseline
 
@@ -423,3 +425,42 @@ def finalize(
             "split_hash": split["split_hash"],
         },
     )
+
+
+def _finalize_ensemble(
+    project: Project, run: Run, include_test: bool, progress: Callable[[str], None] | None
+) -> Run:
+    finals = [
+        finalize(project, Run(project.runs_dir / m), include_test, progress)
+        for m in run.meta["members"]
+    ]
+    parts = ["train", "val"] + (["test"] if include_test else [])
+    final = Run.create(
+        project.runs_dir,
+        f"final-{run.id}",
+        kind="final",
+        parent=run.id,
+        tags=["final", "ensemble"],
+        hypothesis=f"production ensemble: {run.id}'s members retrained on {'+'.join(parts)}",
+        project_root=project.root,
+        extra_meta={
+            "members": [f.id for f in finals],
+            "weights": run.meta["weights"],
+            "model": run.meta.get("model"),
+            "split_hash": run.meta.get("split_hash"),
+            "data_fingerprint": run.meta.get("data_fingerprint"),
+            "trained_on": parts,
+            "includes_test": include_test,
+        },
+    )
+    final.write_summary(
+        {
+            "kind": "final",
+            "model": run.meta.get("model"),
+            "parent": run.id,
+            "members": [f.id for f in finals],
+            "note": f"trained on {'+'.join(parts)}; quote {run.id}'s held-out numbers",
+        }
+    )
+    final.set_status("completed")
+    return final
