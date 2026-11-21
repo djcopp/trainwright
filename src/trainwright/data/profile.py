@@ -171,6 +171,107 @@ def _leakage_scan(
     return out
 
 
+_KEY_HINT = {
+    "id",
+    "no",
+    "num",
+    "nr",
+    "key",
+    "session",
+    "user",
+    "customer",
+    "patient",
+    "subject",
+    "assg",
+    "assignment",
+    "group",
+    "account",
+    "device",
+    "store",
+    "site",
+    "batch",
+    "visit",
+    "participant",
+    "household",
+    "trial",
+    "run",
+    "order",
+    "doc",
+    "document",
+}
+
+
+def _name_tokens(name: str) -> set[str]:
+    import re
+
+    return {t.lower() for t in re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+", name)}
+
+
+def _group_scan(
+    df: pd.DataFrame, y: np.ndarray, task: str, max_cols: int = 60
+) -> list[dict[str, Any]]:
+    """Columns that look like entity keys (user, session, assignment, patient ...).
+
+    Signal: rows sharing a value of the column are much more alike in their *other* features than
+    chance would give (chance-adjusted eta-squared), optionally boosted by a key-like name. When such
+    a key exists, "will predictions be for seen or unseen groups?" decides the right split.
+    """
+    n = len(df)
+    if n < 100:
+        return []
+    num = df.select_dtypes("number")
+    num = num.loc[:, num.std() > 0]
+    if num.shape[1] < 2:
+        return []
+    z = ((num - num.mean()) / num.std()).fillna(0.0)
+    total = float((z**2).to_numpy().sum())
+    rng = np.random.default_rng(0)
+    half = rng.random(n) < 0.5
+    out = []
+    for col in list(df.columns)[:max_cols]:
+        s = df[col]
+        k = int(s.nunique(dropna=True))
+        if not (5 <= k <= n / 3):
+            continue
+        if pd.api.types.is_float_dtype(s) and not np.all(np.mod(s.dropna().to_numpy(), 1) == 0):
+            continue  # continuous measurements are not keys
+        others = z.drop(columns=[col], errors="ignore")
+        tot = total - (float((z[col] ** 2).sum()) if col in z.columns else 0.0)
+        within = float(
+            ((others - others.groupby(s.to_numpy()).transform("mean")) ** 2).to_numpy().sum()
+        )
+        eta = 1 - within / max(tot, 1e-12)
+        adj = eta - (k - 1) / (n - 1)
+        named = bool(_name_tokens(col) & _KEY_HINT)
+        if not ((named and adj > 0.05) or adj > 0.25):
+            continue
+        key = s.astype(str).to_numpy()
+        lift = None
+        if task == "classification":
+            tr = pd.DataFrame({"g": key[half], "y": y[half]})
+            maj = tr.groupby("g")["y"].agg(lambda v: v.value_counts().index[0])
+            pred = pd.Series(key[~half]).map(maj)
+            seen = pred.notna().to_numpy()
+            if seen.any():
+                glob = pd.Series(y[half]).value_counts().index[0]
+                lift = float(
+                    (pred[seen].to_numpy() == y[~half][seen]).mean()
+                    - (y[~half][seen] == glob).mean()
+                )
+        out.append(
+            {
+                "column": col,
+                "n_groups": k,
+                "rows_per_group": round(n / k, 1),
+                "feature_similarity": round(adj, 3),
+                "key_like_name": named,
+                "label_lift": None if lift is None else round(lift, 3),
+            }
+        )
+    out.sort(key=lambda r: -(r["feature_similarity"] + (0.1 if r["key_like_name"] else 0)))
+    return out[:3]
+
+
 def profile_tabular(records: Records, cfg: ProjectConfig) -> dict[str, Any]:
     assert records.table is not None
     df = records.table
@@ -194,7 +295,11 @@ def profile_tabular(records: Records, cfg: ProjectConfig) -> dict[str, Any]:
         | {x["column"] for x in leaks}
     )
     dup = int(df.duplicated().sum())
+    groups = (
+        [] if cfg.data.group_column else _group_scan(df[[c for c in usable]], records.y, cfg.task)
+    )
     return {
+        "group_suspects": groups,
         "n_rows": n,
         "n_features": len(df.columns),
         "feature_kinds": dict(kinds),
@@ -366,6 +471,15 @@ def profile(records: Records, cfg: ProjectConfig, state_dir: Path | None = None)
             recs.append(
                 "LEAKAGE SUSPECTED: a single feature predicts the target almost perfectly. "
                 "Confirm it is available at prediction time before training on it."
+            )
+        for g in t.get("group_suspects", [])[:2]:
+            recs.append(
+                f"`{g['column']}` looks like a grouping key ({g['n_groups']} groups, ~{g['rows_per_group']} rows each; "
+                f"rows in a group share context: feature similarity {g['feature_similarity']:.2f}). DECIDE how the model will be used: "
+                f"if predictions will be for NEW {g['column']} values (new users/sessions/items), set "
+                f"data.group_column: {g['column']} and re-split (`trainwright split --force`), otherwise validation "
+                "is optimistic. If predictions are for groups SEEN in training, keep the random split and consider "
+                "group-level features in features.py (e.g. per-group means fitted on train)."
             )
         if t["duplicate_rows"] > 0:
             recs.append(

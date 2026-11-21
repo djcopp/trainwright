@@ -137,8 +137,20 @@ def train(
     with run.lifecycle():
         seed_everything(exp.train.seed, exp.train.deterministic)
         device = resolve_device(exp.train.device)
+        from .featurehook import FeatureHook
+
+        hook = FeatureHook.from_project(project.root) if cfg.modality == "tabular" else None
+        if hook is not None:
+            run.update_meta(features_sha=hook.sha)
         dm = ProjectDataModule(
-            cfg, exp, records, split, device, cache_dir=project.state_dir / "cache", log=say
+            cfg,
+            exp,
+            records,
+            split,
+            device,
+            cache_dir=project.state_dir / "cache",
+            log=say,
+            feature_hook=hook,
         )
         task = build_task(cfg, exp, dm)
         n_params = count_parameters(task.model)
@@ -178,6 +190,7 @@ def train(
         result = trainer.fit(task, datamodule=dm)
         best = result.best_row
         val_se = float("nan")
+        calibration = None
         if result.best_row:  # best weights are restored: measure how noisy the val metric is
             from .metrics import bootstrap_se
 
@@ -186,6 +199,22 @@ def train(
             val_se = bootstrap_se(
                 cfg.task, cfg.metric, yv_eval, task.postprocess(raw), len(dm.classes or []) or None
             )
+            if cfg.task == "classification":
+                from .metrics import expected_calibration_error, fit_temperature
+
+                t = fit_temperature(raw, yv)
+                ece_before = expected_calibration_error(task.postprocess(raw), yv)
+                task.temperature = t  # type: ignore[assignment]
+                ece_after = expected_calibration_error(task.postprocess(raw), yv)
+                calibration = {
+                    "temperature": round(t, 4),
+                    "ece_before": round(ece_before, 4),
+                    "ece_after": round(ece_after, 4),
+                }
+                if run.best_checkpoint.exists():
+                    ck = torch.load(run.best_checkpoint, map_location="cpu", weights_only=False)
+                    ck["temperature"] = t
+                    torch.save(ck, run.best_checkpoint)
         summary = {
             "kind": "neural",
             "model": exp.model.name,
@@ -204,6 +233,7 @@ def train(
             "n_train": dm.n("train"),
             "n_val": dm.n("val"),
             "val_se": {cfg.metric: val_se},
+            "calibration": calibration,
         }
         if not result.best_row:
             summary["error"] = "no epoch produced a finite validation score"
@@ -258,6 +288,8 @@ def load_task_and_data(
     )
     task = build_task(project.config, exp, dm)
     task.model.load_state_dict(ckpt["model_state"])
+    if hasattr(task, "temperature"):
+        task.temperature = float(ckpt.get("temperature", 1.0))  # type: ignore[assignment]
     task.to(dev).eval()
     return task, dm, ckpt
 
