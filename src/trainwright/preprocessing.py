@@ -95,6 +95,9 @@ class NumericTransformer:
                 indicators.append(miss.astype(np.float64))
         if indicators:
             out = np.concatenate([out, np.stack(indicators, axis=1)], axis=1)
+        # denormal or near-identical quantiles can make interp produce inf/NaN
+        lim = float(self.clip) if self.clip else 1e6
+        out = np.nan_to_num(out, nan=0.0, posinf=lim, neginf=-lim)
         if self.clip:
             out = np.clip(out, -self.clip, self.clip)
         return out.astype(np.float32)
