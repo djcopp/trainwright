@@ -30,7 +30,7 @@ from .pipeline import LifecycleError, get_records, load_task_and_data, require_s
 from .project import Project
 from .tracking import Run
 
-RUNTIME_FILES = ["runtime.py", "preprocessing.py"]
+RUNTIME_FILES = ["runtime.py", "preprocessing.py", "featurehook.py"]
 
 
 class _ExportWrapper(nn.Module):
@@ -43,12 +43,14 @@ class _ExportWrapper(nn.Module):
         input_names: list[str],
         absent: dict[str, tuple[int, torch.dtype]],
         classification: bool,
+        temperature: float = 1.0,
     ):
         super().__init__()
         self.model = model
         self.input_names = input_names
         self.absent = absent
         self.classification = classification
+        self.temperature = float(temperature)
 
     def forward(self, *args: torch.Tensor) -> torch.Tensor:
         kwargs = dict(zip(self.input_names, args))
@@ -56,7 +58,9 @@ class _ExportWrapper(nn.Module):
         for name, (width, dtype) in self.absent.items():
             kwargs[name] = torch.zeros(b, width, dtype=dtype, device=args[0].device)
         out = self.model(**kwargs)
-        return torch.softmax(out.float(), dim=-1) if self.classification else out.float()
+        if self.classification:
+            return torch.softmax(out.float() / self.temperature, dim=-1)
+        return out.float()
 
 
 def _example_inputs(dm: Any, n: int = 4) -> dict[str, torch.Tensor]:
@@ -70,7 +74,13 @@ def export_onnx(task: Any, dm: Any, path: Path) -> dict[str, Any]:
     example = _example_inputs(dm)
     present = [k for k, v in example.items() if v.ndim < 2 or v.shape[1] > 0]
     absent = {k: (0, v.dtype) for k, v in example.items() if k not in present}
-    wrapper = _ExportWrapper(model, present, absent, dm.task == "classification").eval()
+    wrapper = _ExportWrapper(
+        model,
+        present,
+        absent,
+        dm.task == "classification",
+        float(getattr(task, "temperature", 1.0)),
+    ).eval()
     args = tuple(example[k] for k in present)
     with torch.no_grad():
         ref = wrapper(*args).numpy()
@@ -169,7 +179,10 @@ def export_run(
             model=meta.get("model"),
             columns=blob.get("columns"),
             baseline=meta.get("model", "").split(":")[-1],
-            preprocessor={"features": {"type": cfg.modality}},
+            preprocessor={
+                "features": {"type": cfg.modality},
+                "feature_hook": blob.get("feature_hook"),
+            },
         )
         reqs = ["numpy", "scikit-learn", "joblib", "pandas", "fastapi", "uvicorn"]
     else:
@@ -188,6 +201,7 @@ def export_run(
             ["numpy", "onnxruntime", "fastapi", "uvicorn"]
             + (["pillow", "python-multipart"] if cfg.modality == "image" else [])
             + (["tokenizers"] if ckpt["preprocessor"]["features"].get("type") == "hf_text" else [])
+            + (["pandas"] if ckpt["preprocessor"].get("feature_hook") else [])
         )
     rt = out / "tw_runtime"
     rt.mkdir()

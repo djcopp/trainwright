@@ -111,6 +111,7 @@ class ProjectDataModule(DataModule):
         splits: tuple[str, ...] = ("train", "val"),
         preprocessor_state: dict[str, Any] | None = None,
         log: Callable[[str], None] = lambda s: None,
+        feature_hook: Any = None,
     ):
         self.project = project
         self.exp = exp
@@ -128,6 +129,7 @@ class ProjectDataModule(DataModule):
         self._tensors: dict[str, dict[str, torch.Tensor]] = {}
         self._image_source: dict[str, ImageSource] = {}
         self._spec: dict[str, Any] = {}
+        self.feature_hook = feature_hook
         self._fit_or_load(preprocessor_state, cache_dir, full_records=records)
 
     # ------------------------------------------------------------------ setup
@@ -150,14 +152,23 @@ class ProjectDataModule(DataModule):
                 self.target_scaler = TargetScaler(pp.target_transform).fit(train.y.astype(float))
 
         if self.modality == "tabular":
+            from ..featurehook import FeatureHook
+
+            if state and state.get("feature_hook"):
+                self.feature_hook = FeatureHook.from_state(state["feature_hook"])
+            elif state:
+                self.feature_hook = None
+            elif self.feature_hook is not None:
+                self.log(f"applying features.py (sha {self.feature_hook.sha}) fitted on train")
+                self.feature_hook.fit(train.table)
             if state:
                 self.pre: Any = TabularPreprocessor.from_state(state["features"])
             else:
                 self.pre = TabularPreprocessor(
                     pp.numeric, pp.cat_min_freq, pp.max_cat_cardinality
-                ).fit(train.table_dict(), drop=self.project.data.drop)
+                ).fit(self.featurize(train.table), drop=self.project.data.drop)
             for s, recs in self.records.items():
-                feats = self.pre.transform(recs.table_dict())
+                feats = self.pre.transform(self.featurize(recs.table))
                 self._tensors[s] = {
                     "x_num": torch.from_numpy(feats["x_num"]).to(self.device),
                     "x_cat": torch.from_numpy(feats["x_cat"]).to(self.device),
@@ -211,8 +222,18 @@ class ProjectDataModule(DataModule):
     def spec(self) -> dict[str, Any]:
         return self._spec
 
+    def featurize(self, df: Any) -> dict[str, Any]:
+        """Raw table -> (features.py) -> column dict for the preprocessor."""
+        from .records import table_to_dict
+
+        if self.feature_hook is not None:
+            df = self.feature_hook.transform(df)
+        return table_to_dict(df)
+
     def preprocessor_state(self) -> dict[str, Any]:
         state: dict[str, Any] = {"modality": self.modality, "task": self.task}
+        if self.feature_hook is not None:
+            state["feature_hook"] = self.feature_hook.state_dict()
         if self.modality in ("tabular", "text"):
             state["features"] = self.pre.state_dict()
         else:

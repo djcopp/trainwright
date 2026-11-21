@@ -40,8 +40,11 @@ def _baseline_outputs(
     if name.endswith("dummy"):
         X: Any = np.zeros((len(recs), 1))
     elif cfg.modality == "tabular":
+        from .featurehook import FeatureHook
+
         num, cat = blob["columns"]
-        X = _to_str_cats(_tabular_frame(recs, num + cat), cat)
+        hook = FeatureHook.from_state(blob["feature_hook"]) if blob.get("feature_hook") else None
+        X = _to_str_cats(_tabular_frame(recs, num + cat, hook), cat)
     elif cfg.modality == "text":
         X = recs.texts
     else:

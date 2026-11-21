@@ -63,25 +63,30 @@ class Records:
     def table_dict(self) -> dict[str, Any]:
         """Column -> numpy array, the input format of TabularPreprocessor."""
         assert self.table is not None
-        out: dict[str, Any] = {}
-        for c in self.table.columns:
-            s = self.table[c]
-            if pd.api.types.is_bool_dtype(s):
-                out[c] = s.astype("float64").to_numpy()
-            elif pd.api.types.is_numeric_dtype(s):
-                out[c] = s.to_numpy(dtype=np.float64, na_value=np.nan)
-            elif pd.api.types.is_datetime64_any_dtype(s):
-                vals = (
-                    s.dt.tz_localize(None).to_numpy(dtype="datetime64[ns]")
-                    if s.dt.tz
-                    else s.to_numpy(dtype="datetime64[ns]")
-                )
-                secs = vals.astype("int64").astype(np.float64) / 1e9
-                secs[np.isnat(vals)] = np.nan
-                out[c] = secs
-            else:
-                out[c] = s.astype(object).where(s.notna(), None).to_numpy()
-        return out
+        return table_to_dict(self.table)
+
+
+def table_to_dict(df: pd.DataFrame) -> dict[str, Any]:
+    """DataFrame -> column -> numpy array (numerics as float64 with NaN, others as objects/None)."""
+    out: dict[str, Any] = {}
+    for c in df.columns:
+        s = df[c]
+        if pd.api.types.is_bool_dtype(s):
+            out[c] = s.astype("float64").to_numpy()
+        elif pd.api.types.is_numeric_dtype(s):
+            out[c] = s.to_numpy(dtype=np.float64, na_value=np.nan)
+        elif pd.api.types.is_datetime64_any_dtype(s):
+            vals = (
+                s.dt.tz_localize(None).to_numpy(dtype="datetime64[ns]")
+                if s.dt.tz
+                else s.to_numpy(dtype="datetime64[ns]")
+            )
+            secs = vals.astype("int64").astype(np.float64) / 1e9
+            secs[np.isnat(vals)] = np.nan
+            out[c] = secs
+        else:
+            out[c] = s.astype(object).where(s.notna(), None).to_numpy()
+    return out
 
 
 def read_table(path: Path) -> pd.DataFrame:

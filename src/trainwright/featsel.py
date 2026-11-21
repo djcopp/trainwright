@@ -31,13 +31,14 @@ def permutation_importance(
     n = len(recs)
     rng = np.random.default_rng(seed)
     rows = rng.choice(n, size=min(n, max_rows), replace=False) if n > max_rows else np.arange(n)
-    table = {k: v[rows] for k, v in recs.table_dict().items()}
+    assert recs.table is not None
+    raw = recs.table.iloc[rows].reset_index(drop=True)
     y = dm.y_encoded("val")[rows]
     sign = 1 if cfg.metric_mode == "max" else -1
 
     @torch.no_grad()
-    def score(tbl: dict[str, Any]) -> float:
-        feats = dm.pre.transform(tbl)
+    def score(df: Any) -> float:
+        feats = dm.pre.transform(dm.featurize(df))
         xn = torch.from_numpy(feats["x_num"]).to(dm.device)
         xc = torch.from_numpy(feats["x_cat"]).to(dm.device)
         outs = []
@@ -46,21 +47,26 @@ def permutation_importance(
         return float(task.compute_metrics(torch.cat(outs).numpy(), y)[cfg.metric])
 
     task.eval()
-    base = score(table)
-    cols = dm.pre.numeric_columns + dm.pre.categorical_columns
+    base = score(raw)
+    # permute *raw* input columns (so derived features from features.py are covered too)
+    cols = [c for c in raw.columns if c not in dm.pre.dropped]
     results = []
     for c in cols:
         drops = []
         for _ in range(repeats):
-            shuffled = dict(table)
-            shuffled[c] = table[c][rng.permutation(len(rows))]
+            shuffled = raw.copy()
+            shuffled[c] = raw[c].to_numpy()[rng.permutation(len(rows))]
             drops.append(sign * (base - score(shuffled)))
         results.append(
             {
                 "feature": c,
                 "importance": float(np.mean(drops)),
                 "std": float(np.std(drops)),
-                "kind": "numeric" if c in dm.pre.numeric_columns else "categorical",
+                "kind": "numeric"
+                if c in dm.pre.numeric_columns
+                else "categorical"
+                if c in dm.pre.categorical_columns
+                else "raw",
             }
         )
     results.sort(key=lambda r: -r["importance"])

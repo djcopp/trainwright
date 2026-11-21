@@ -200,3 +200,42 @@ def test_schema_and_models(tabular_project):
     names = [m["name"] for m in tw("models")["result"]]
     assert names == ["tabular_mlp"]
     assert np.isfinite(1.0)
+
+
+FEATURES_PY = '''
+import pandas as pd
+
+def fit(train):
+    return {"colour_rate": {str(k): float(v) for k, v in train.groupby("colour")["a"].mean().items()}}
+
+def transform(df, state):
+    df = df.copy()
+    df["colour_a_mean"] = df["colour"].astype(str).map(state["colour_rate"]).astype(float)
+    df["a_times_b"] = df["a"] * df["b"]
+    return df
+'''
+
+
+def test_feature_hook_is_fitted_tracked_and_shipped(tabular_project):
+    tw = tabular_project
+    (tw.root / "features.py").write_text(FEATURES_PY)
+    tw("init", "--data", "data.csv")
+    tw("split")
+    tw("baseline", "--only", "dummy,hist_gbm")
+    run = tw("train", *FAST, "-o", "train.max_epochs=4", "-H", "with features.py")["result"]
+    rid = run["run"]
+    meta = json.loads((tw.root / "runs" / rid / "meta.json").read_text())
+    assert meta["features_sha"]
+    exp = tw("export", rid)["result"]
+    bundle = json.loads((tw.root / exp["dir"] / "bundle.json").read_text())
+    assert "a_times_b" in bundle["preprocessor"]["features"]["numeric_columns"]
+    assert (tw.root / exp["dir"] / "tw_runtime" / "featurehook.py").exists()
+    from trainwright.runtime import Predictor
+
+    out = Predictor(exp["dir"]).predict([{"a": 1.0, "b": 2.0, "c": 0.0, "d": 0.0, "colour": "red"}])
+    assert out[0]["label"] in ("yes", "no")
+    # the sklearn baseline bundle applies the same hook
+    gbm = [r for r in tw("runs")["result"] if r["model"] == "baseline:hist_gbm"][0]["id"]
+    bexp = tw("export", gbm)["result"]
+    assert Predictor(bexp["dir"]).predict([{"a": 1.0, "b": 2.0, "c": 0.0, "d": 0.0, "colour": "red"}])
+    assert tw("features", rid, "--repeats", "1")["result"]["importances"]

@@ -37,6 +37,11 @@ class Predictor:
         pre = self.meta["preprocessor"]
         feats = pre["features"]
         self.target = TargetScaler.from_state(pre["target"]) if pre.get("target") else None
+        self.hook: Any = None
+        if pre.get("feature_hook"):
+            from .featurehook import FeatureHook
+
+            self.hook = FeatureHook.from_state(pre["feature_hook"])
         if self.kind == "sklearn":
             import joblib
 
@@ -60,13 +65,20 @@ class Predictor:
         self.input_names = [i.name for i in self.session.get_inputs()]
 
     # ------------------------------------------------------------------ inputs
+    def _apply_hook(self, instances: list[Any]) -> list[dict[str, Any]]:
+        rows = [row if isinstance(row, dict) else {} for row in instances]
+        if self.hook is None:
+            return rows
+        import pandas as pd
+
+        df = self.hook.transform(pd.DataFrame(rows))
+        return df.astype(object).where(df.notna(), None).to_dict(orient="records")
+
     def featurise(self, instances: list[Any]) -> dict[str, np.ndarray]:
         if self.modality == "tabular":
             cols = self.pre.numeric_columns + self.pre.categorical_columns
-            table = {
-                c: [row.get(c) if isinstance(row, dict) else None for row in instances]
-                for c in cols
-            }
+            rows = self._apply_hook(instances)
+            table = {c: [row.get(c) for row in rows] for c in cols}
             feats = self.pre.transform(table)
         elif self.modality == "text":
             feats = {"tokens": self.pre.encode([str(t) for t in instances])}
@@ -104,7 +116,9 @@ class Predictor:
             import pandas as pd
 
             num, cat = self.meta["columns"]
-            df = pd.DataFrame([{c: row.get(c) for c in num + cat} for row in instances])
+            df = pd.DataFrame(
+                [{c: row.get(c) for c in num + cat} for row in self._apply_hook(instances)]
+            )
             for c in cat:
                 df[c] = df[c].astype(object).where(df[c].notna(), "<NA>").astype(str)
             X: Any = df

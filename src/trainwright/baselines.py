@@ -36,10 +36,14 @@ DESCRIPTIONS = {
 }
 
 
-def _tabular_frame(recs: Records, cols: list[str]) -> Any:
+def _tabular_frame(recs: Records, cols: list[str], hook: Any = None) -> Any:
     import pandas as pd
 
-    d = recs.table_dict()
+    from .data.records import table_to_dict
+
+    assert recs.table is not None
+    df = hook.transform(recs.table) if hook is not None else recs.table
+    d = table_to_dict(df)
     return pd.DataFrame({c: d[c] for c in cols})
 
 
@@ -162,13 +166,25 @@ def run_baselines(
 
     # features per modality
     feats: dict[str, Any] = {}
+    hook = None
     if cfg.modality == "tabular":
+        from .data.records import table_to_dict
+        from .featurehook import FeatureHook
+
+        hook = FeatureHook.from_project(project.root)
+        if hook is not None:
+            assert train.table is not None
+            hook.fit(train.table)
+            if progress:
+                progress(f"baselines use features.py (sha {hook.sha})")
+        assert train.table is not None
+        train_df = hook.transform(train.table) if hook is not None else train.table
         pre = TabularPreprocessor(max_cat_cardinality=1000).fit(
-            train.table_dict(), drop=cfg.data.drop
+            table_to_dict(train_df), drop=cfg.data.drop
         )
         cols = pre.numeric_columns + pre.categorical_columns
-        feats["train"] = _to_str_cats(_tabular_frame(train, cols), pre.categorical_columns)
-        feats["val"] = _to_str_cats(_tabular_frame(val, cols), pre.categorical_columns)
+        feats["train"] = _to_str_cats(_tabular_frame(train, cols, hook), pre.categorical_columns)
+        feats["val"] = _to_str_cats(_tabular_frame(val, cols, hook), pre.categorical_columns)
     elif cfg.modality == "text":
         feats["train"], feats["val"] = train.texts, val.texts
     else:
@@ -243,6 +259,7 @@ def run_baselines(
                 "columns": (pre.numeric_columns, pre.categorical_columns)
                 if cfg.modality == "tabular"
                 else None,
+                "feature_hook": hook.state_dict() if hook is not None else None,
             },
             run.dir / "model.joblib",
         )
