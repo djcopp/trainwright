@@ -361,10 +361,11 @@ def main() -> None:
     r.add_argument("--timeout-min", type=float, default=45)
     r.add_argument("--tag", default="")
     r.add_argument("--tasks", type=Path, default=ROOT / "scratch" / "tasks")
-    r.add_argument("--trials", type=Path, default=ROOT / "scratch" / "trials")
+    # trials run OUTSIDE the repo so agents can't wander into hidden labels or other trials
+    r.add_argument("--trials", type=Path, default=Path.home() / ".cache" / "trainwright-trials")
     s = sub.add_parser("score")
     s.add_argument("--tasks", type=Path, default=ROOT / "scratch" / "tasks")
-    s.add_argument("--trials", type=Path, default=ROOT / "scratch" / "trials")
+    s.add_argument("--trials", type=Path, default=Path.home() / ".cache" / "trainwright-trials")
     a = ap.parse_args()
     if a.cmd == "prepare":
         prepare(a.datasets, a.out)
