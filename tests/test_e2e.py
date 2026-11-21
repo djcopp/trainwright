@@ -271,7 +271,14 @@ def test_finalize_a_baseline_and_ship_it(regression_project):
     fid = tw("finalize", gbm)["result"]["run"]
     meta = json.loads((tw.root / "runs" / fid / "meta.json").read_text())
     assert meta["kind"] == "final" and meta["model"] == "baseline:hist_gbm"
-    assert tw("evaluate", fid, "--split", "test")["result"]["metrics"]["rmse"] > 0
+    # test was already evaluated, so the production model also learns from it ...
+    assert meta["trained_on"] == ["train", "val", "test"]
+    # ... and can therefore never be scored on it
+    refused = tw("evaluate", fid, "--split", "test", ok=False)
+    assert refused.get("ok") is False or refused.get("exception") is not None
+    # opting out keeps test held out
+    held = tw("finalize", gbm, "--no-include-test")["result"]["run"]
+    assert tw("evaluate", held, "--split", "test")["result"]["metrics"]["rmse"] > 0
     exp = tw("export", fid)["result"]
     from trainwright.runtime import Predictor
 

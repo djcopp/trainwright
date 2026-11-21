@@ -932,13 +932,15 @@ def evaluate(
 
 @app.command()
 def finalize(
-    ref: str = typer.Argument("best-neural"),
-    include_test: bool = typer.Option(
-        False,
-        help="Also train on the test split (only after the final test evaluation is recorded).",
+    ref: str = typer.Argument("best"),
+    include_test: bool | None = typer.Option(
+        None,
+        "--include-test/--no-include-test",
+        help="Train on the test split too. Default: yes once this run's test evaluation is recorded "
+        "(the number is already reported, so holding the data back only costs accuracy).",
     ),
 ) -> None:
-    """Retrain the selected run's recipe on train+val for its best epoch count: the production model."""
+    """Retrain the selected run's recipe on all usable data for its best epoch count: the production model."""
     from .pipeline import finalize as _finalize
 
     STATE["command"] = "finalize"
@@ -947,6 +949,8 @@ def finalize(
 
     run = resolve_ref(project, ref)
     warnings = []
+    if include_test is None:
+        include_test = run.eval_result("test") is not None
     if include_test and not run.eval_result("test"):
         raise CLIError(
             f"{run.id} has no recorded test evaluation.",
