@@ -135,7 +135,10 @@ def format_benchmark(b: dict[str, Any]) -> str:
                 {
                     "image": ": resize images client-side to cut cost)",
                     "text": ": tokenisation dominates)",
-                }.get(b.get("modality") or "", ": features.py / row conversion dominates; batch requests)")
+                }.get(
+                    b.get("modality") or "",
+                    ": features.py / row conversion dominates; batch requests)",
+                )
                 if (b.get("preprocessing_share") or 0) > 0.5
                 else ")"
             )
