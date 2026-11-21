@@ -561,15 +561,17 @@ def batch(
     max_trials: int,
     model: str,
     timeout_min: float,
+    only: list[str] | None = None,
+    prefix: str = "b",
 ) -> None:
     """Resumable: runs every (task, condition, rep) without a .meta.json, at most max_trials this call."""
     jobs = []
     for tdir in sorted(tasks.iterdir()):
-        if not (tdir / "task.json").exists():
+        if not (tdir / "task.json").exists() or (only and tdir.name not in only):
             continue
         for rep in range(1, reps + 1):
             for cond in conditions:
-                tag = f"b{rep}"
+                tag = f"{prefix}{rep}"
                 if not (trials / f"{tdir.name}-{cond}-{tag}.meta.json").exists():
                     jobs.append((tdir.name, cond, tag))
     jobs = jobs[:max_trials]
@@ -599,6 +601,8 @@ def main() -> None:
     )
     b.add_argument("--model", default="sonnet")
     b.add_argument("--timeout-min", type=float, default=30)
+    b.add_argument("--only", nargs="*", default=None, help="task names to include")
+    b.add_argument("--prefix", default="b", help="trial tag prefix, e.g. r8-")
     p = sub.add_parser("prepare")
     p.add_argument("--datasets", type=Path, default=ROOT / "scratch" / "datasets")
     p.add_argument("--out", type=Path, default=ROOT / "scratch" / "tasks")
@@ -638,6 +642,8 @@ def main() -> None:
             a.max_trials,
             a.model,
             a.timeout_min,
+            a.only,
+            a.prefix,
         )
     elif a.cmd == "prepare":
         prepare(a.datasets, a.out, only=a.only)
