@@ -396,6 +396,9 @@ def load_image(source: Any, size: int) -> np.ndarray:
         img = source
     else:
         img = Image.open(source)
+    if getattr(img, "format", None) == "JPEG":
+        # decode at reduced resolution (1/2, 1/4, 1/8): 10x+ faster for large phone photos
+        img.draft("RGB", (size * 2, size * 2))
     img = ImageOps.exif_transpose(img).convert("RGB")
     w, h = img.size
     scale = size / min(w, h)
