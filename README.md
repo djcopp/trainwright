@@ -25,28 +25,18 @@ experiment. That way a coding agent produces the same disciplined result a caref
 
 ## Measured improvements
 
-Same request, same agent (Claude Code running Sonnet), same time limit. The only difference is
-whether trainwright is installed. Scores are on a 15% holdout that neither agent ever saw,
-with every run of each condition counted. Data from [docs/agent-trials.md](docs/agent-trials.md).
+Compared with prompting the same agent (Claude Code on Sonnet) without trainwright, on hidden
+holdouts across four public datasets (tabular, image and text) with repeated runs per condition:
 
-| task | data | metric | straight prompt | with trainwright | change |
-|---|---|---|---|---|---|
-| Reading-relevance prediction | [eye_movements](https://www.openml.org/d/1044), tabular | accuracy | 0.802 (0.696–0.908) | **0.853** (0.848–0.859) | **+5.1 pts** mean, **+15.2 pts** worst case |
-| Critical temperature | [superconduct](https://www.openml.org/d/44148), tabular | RMSE ↓ | 9.88 (9.60–10.16) | **9.77** (9.57–9.91) | **−1.1%** mean, **−2.4%** worst case |
-| Car-part recognition | [car parts](https://huggingface.co/datasets/stevenalbert10/Toyota-Corolla-Car-Parts), photos | accuracy | 0.996 | **1.000** | 1 error → 0 of 260 |
-| Support-intent routing | [banking77](https://huggingface.co/datasets/PolyAI/banking77), text | accuracy | **0.934** (0.931–0.937) | 0.925 (0.914–0.932) | −0.9 pts (within ~1.5 SE) |
+| | |
+|---|---|
+| **Better results** | wins **3 of 4** tasks, **+1.7%** on the primary metric on average |
+| **Fewer errors** | **13.5% fewer** prediction errors (median across tasks) |
+| **Reliable worst case** | worst run **+5.7%** better on average; run-to-run spread down from 21 points to about 1 on the hardest task |
+| **Same agent cost** | **$0.15–0.23** per task vs $0.13–0.29 |
+| **Cheaper to serve** | the resulting models cost **hundreds to thousands of times less** per prediction than the Sonnet call they replace (`trainwright benchmark` estimates) |
 
-- **Consistent results.** Across repeated runs of the identical prompt, the straight prompt's
-  accuracy on eye_movements varied by 21 points. With trainwright it varied by 1.2 points, and
-  its worst run beat the straight prompt's worst run on three of four tasks.
-- **Same agent cost.** $0.15–0.23 per task with trainwright vs $0.13–0.29 without (token cost of
-  the agent session).
-- **An auditable trail.** Every trainwright run left a tracked experiment log (hypotheses,
-  curves, diagnoses, standard errors) and a test-access ledger. A production refit, ONNX bundle,
-  server and model card are one command away. The straight prompt left ad-hoc scripts.
-- **Serving cost vs the LLM call it replaces.** Measured by `trainwright benchmark` and costed
-  with stated assumptions: about **$4.89 vs $4,000** per million car-part photos, and about
-  **$0.35 vs $1,750** per million support messages (2-vCPU VM vs claude-sonnet-5-5 list prices).
+Per-task results and method are under [Benchmarks](#benchmarks).
 
 ## Highlights
 
@@ -292,7 +282,14 @@ datasets, once with only a standard Python ML environment (the straight prompt) 
 trainwright. Both are scored on a 15% holdout neither agent ever sees, with two or more runs per
 condition.
 
-Headline results are in [Measured improvements](#measured-improvements).
+| task | data | metric | straight prompt | with trainwright | change |
+|---|---|---|---|---|---|
+| Reading-relevance prediction | [eye_movements](https://www.openml.org/d/1044), tabular | accuracy | 0.802 (0.696–0.908) | **0.853** (0.848–0.859) | **+5.1 pts** mean, **+15.2 pts** worst case |
+| Critical temperature | [superconduct](https://www.openml.org/d/44148), tabular | RMSE ↓ | 9.88 (9.60–10.16) | **9.77** (9.57–9.91) | **−1.1%** mean, **−2.4%** worst case |
+| Car-part recognition | [car parts](https://huggingface.co/datasets/stevenalbert10/Toyota-Corolla-Car-Parts), photos | accuracy | 0.996 | **1.000** | 1 error → 0 of 260 |
+| Support-intent routing | [banking77](https://huggingface.co/datasets/PolyAI/banking77), text | accuracy | **0.934** (0.931–0.937) | 0.925 (0.914–0.932) | −0.9 pts (within ~1.5 SE) |
+
+banking77 is the one task where the straight prompt is still ahead, by about 1.5 standard errors.
 
 Method, per-round results and the changes each round produced are documented in
 [docs/agent-trials.md](docs/agent-trials.md). Reproduce with `bench/agent_trials.py`.
