@@ -307,3 +307,16 @@ def test_ensemble_build_evaluate_finalize_export(tabular_project):
         [{"a": 1.0, "b": 0.0, "c": None, "d": 0.0, "colour": "red"}]
     )
     assert out[0]["label"] in ("yes", "no") and 0 <= out[0]["confidence"] <= 1
+
+
+def test_predict_prefers_the_finalized_model(tabular_project):
+    tw = tabular_project
+    tw("init", "--data", "data.csv")
+    tw("split")
+    rid = tw("train", *FAST, "-o", "train.max_epochs=3", "-H", "base")["result"]["run"]
+    (tw.root / "new.csv").write_text("a,b,c,d,colour,row_id\n1,0,0,0,red,5\n")
+    before = tw("predict", rid, "-i", "new.csv", "--out", "p.csv")
+    assert any("finalize" in w for w in before["warnings"]) and before["result"]["model"] == rid
+    fid = tw("finalize", rid)["result"]["run"]
+    after = tw("predict", rid, "-i", "new.csv", "--out", "p.csv")["result"]
+    assert after["model"] == fid

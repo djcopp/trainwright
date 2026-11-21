@@ -918,7 +918,12 @@ def evaluate(
             lines.append(f"{k.replace('_png', '')}: {_rel(res[k])}")
     lines.append(f"predictions: {_rel(run.eval_dir / f'{split_}_predictions.csv')}")
     nxt = (
-        [{"command": f"trainwright export {run.id}", "why": "package the final model"}]
+        [
+            {
+                "command": f"trainwright finalize {run.id}",
+                "why": "retrain this recipe on all the data (incl. test, now scored): the production model to predict/export with",
+            }
+        ]
         if split_ == "test"
         else [
             {
@@ -1123,6 +1128,9 @@ def predict(
         None, "--out", "-o", help="Write ALL predictions to this CSV (id, prediction, confidence)."
     ),
     limit: int = typer.Option(20, help="Rows to print when --out is not given."),
+    use_final: bool = typer.Option(
+        True, "--final/--no-final", help="Use the run's finalized production model if one exists."
+    ),
 ) -> None:
     """Predict with a run's exported bundle (exported automatically if needed).
 
@@ -1136,7 +1144,37 @@ def predict(
 
     STATE["command"] = "predict"
     project = _project()
-    pred = Predictor(_bundle_dir(project, ref, auto_export=True))
+    warnings: list[str] = []
+    if not use_final:
+        target = ref
+    else:
+        target = ref
+        try:
+            from .leaderboard import resolve_ref
+            from .tracking import list_runs
+
+            run = resolve_ref(project, ref)
+            if run.meta.get("kind") != "final":
+                finals = [
+                    r
+                    for r in list_runs(project.runs_dir)
+                    if r.meta.get("kind") == "final"
+                    and r.meta.get("parent") == run.id
+                    and r.meta.get("status") == "completed"
+                ]
+                if finals:
+                    target = finals[-1].id
+                    progress(
+                        f"using production model {target} (finalized from {run.id}); --no-final to opt out"
+                    )
+                else:
+                    warnings.append(
+                        f"{run.id} was trained on the train split only. For production predictions run "
+                        f"`trainwright finalize {run.id}` first (more data, usually better)."
+                    )
+        except FileNotFoundError:
+            pass  # a bundle directory path
+    pred = Predictor(_bundle_dir(project, target, auto_export=True))
     suf = input_.suffix.lower()
     ids: list[str]
     if input_.is_dir():
@@ -1170,7 +1208,7 @@ def predict(
         ids = [str(i) for i in range(len(items))]
     if out_path is None:
         out = pred.predict(items[:limit])
-        emit(out, "\n".join(json.dumps(o) for o in out))
+        emit(out, "\n".join(json.dumps(o) for o in out), warnings=warnings)
         return
     rows = []
     for i in range(0, len(items), 512):
@@ -1184,8 +1222,9 @@ def predict(
             w.writerow(["id", "prediction"])
             w.writerows([ids[k], r["prediction"]] for k, r in enumerate(rows))
     emit(
-        {"path": str(out_path), "n": len(rows)},
-        f"wrote {len(rows)} predictions to {_rel(out_path)}",
+        {"path": str(out_path), "n": len(rows), "model": target},
+        f"wrote {len(rows)} predictions to {_rel(out_path)} (model {target})",
+        warnings=warnings,
     )
 
 
