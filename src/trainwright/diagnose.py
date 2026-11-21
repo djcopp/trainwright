@@ -272,7 +272,30 @@ def diagnose_history(
     if len(fvl) >= 5:
         i_min = min(range(len(fvl)), key=lambda i: fvl[i])
         rise = (fvl[-1] - fvl[i_min]) / max(1e-12, abs(fvl[i_min]))
-        if i_min + 1 <= 0.7 * len(fvl) and rise > 0.10 and ftl[-1] < ftl[min(i_min, len(ftl) - 1)]:
+        loss_overfit = (
+            i_min + 1 <= 0.7 * len(fvl) and rise > 0.10 and ftl[-1] < ftl[min(i_min, len(ftl) - 1)]
+        )
+        fvm_all = _finite(vm)
+        metric_degraded = True
+        if len(fvm_all) == len(fvl) and fvm_all:
+            best_m = max(fvm_all) if mode == "max" else min(fvm_all)
+            last_m = fvm_all[-1]
+            drop = (best_m - last_m) if mode == "max" else (last_m - best_m)
+            band = 2 * se if math.isfinite(se) else (0.005 if bounded else 0.01 * abs(best_m))
+            metric_degraded = drop > band
+        if loss_overfit and not metric_degraded:
+            add(
+                "overconfident",
+                "info",
+                f"Val loss rose {rise:.0%} after epoch {i_min + 1} but val {metric} did not get worse: the model is "
+                "becoming over-confident (larger logits), not losing accuracy. This mainly hurts calibration; "
+                "temperature scaling (applied automatically at evaluation/export) or label smoothing addresses it.",
+                [S.s("train.label_smoothing", 0.1, "softer targets curb over-confidence")]
+                if not S.get("train.label_smoothing")
+                else [],
+                val_loss_min_epoch=i_min + 1,
+            )
+        elif loss_overfit:
             add(
                 "overfitting",
                 "warning",

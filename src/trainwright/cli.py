@@ -187,6 +187,35 @@ def _infer_project(
     }
 
 
+def _estimate_llm_tokens(cfg: Any, data: Path) -> int:
+    """Rough tokens for the LLM call this model would replace: instructions + label list + input."""
+    base = 250
+    n_classes = 0
+    try:
+        from .data.records import read_table
+
+        if cfg.modality == "image":
+            return base + 1600  # ~1092x1092 image ≈ 1600 tokens
+        df = read_table(data)
+        if cfg.task == "classification" and cfg.data.target:
+            n_classes = int(df[cfg.data.target].nunique())
+        if cfg.modality == "text" and cfg.data.text_column:
+            avg = float(df[cfg.data.text_column].astype(str).str.len().mean())
+        else:
+            avg = (
+                float(
+                    df.drop(columns=[cfg.data.target], errors="ignore")
+                    .head(200)
+                    .to_json(orient="records")
+                    .__len__()
+                )
+                / 200
+            )
+        return int(base + 6 * n_classes + avg / 4)
+    except Exception:
+        return 800
+
+
 AGENT_FILES_NOTE = "Agent instructions written: AGENTS.md, .claude/skills/trainwright/SKILL.md"
 
 SKILL_FRONTMATTER = """---
@@ -310,6 +339,7 @@ def init(
         metric=metric,
         metric_mode=mode,
     )
+    cfg.cost.llm_input_tokens_per_call = _estimate_llm_tokens(cfg, data_abs)
     project = Project(root, cfg)
     project.save()
     project.ensure_dirs()
@@ -838,15 +868,20 @@ def evaluate(
     reason: str | None = typer.Option(
         None, help="Why this run is the final model (for --split test)."
     ),
+    force: bool = typer.Option(
+        False, help="Recompute a test evaluation (records another test access)."
+    ),
 ) -> None:
-    """Error analysis on val, or the one-time final evaluation on the sealed test split."""
+    """Error analysis on val, or the one-time final evaluation on the sealed test split.
+
+    Re-running ``--split test`` for the same run returns the cached result without a new access."""
     from .evaluate import evaluate as _evaluate
     from .leaderboard import resolve_ref
 
     STATE["command"] = "evaluate"
     project = _project()
     run = resolve_ref(project, ref)
-    res = _evaluate(project, run, split_, reason)
+    res = _evaluate(project, run, split_, reason, force)
     m = project.config.metric
     met = res["metrics"]
     lines = [

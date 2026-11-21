@@ -190,7 +190,16 @@ def run_trial(
         )
     else:
         bin_dir = ROOT / "scratch" / "ctrl-env" / "bin"
-    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    # never let the dev checkout's venv (e.g. from `uv run`) leak into the trial
+    clean = [
+        p
+        for p in env["PATH"].split(":")
+        if ".venv" not in p and "tw-env" not in p and "ctrl-env" not in p
+    ]
+    env["PATH"] = ":".join([str(bin_dir), *clean])
+    which = subprocess.run(
+        ["which", "trainwright", "python"], env=env, capture_output=True, text=True
+    ).stdout
     prompt = spec["prompt"] + AUTONOMY
     cmd = [
         "claude",
@@ -230,6 +239,7 @@ def run_trial(
         "status": status,
         "wall_s": round(time.time() - t0, 1),
         "tag": tag,
+        "which": which.split(),
     }
     (tdir.parent / f"{tdir.name}.meta.json").write_text(json.dumps(meta, indent=2))
     print(json.dumps(score_trial(tasks, tdir), indent=2))

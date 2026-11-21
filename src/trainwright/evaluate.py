@@ -64,7 +64,7 @@ def test_ledger(project: Project) -> list[dict[str, Any]]:
 
 
 def evaluate(
-    project: Project, run: Run, split: str = "val", reason: str | None = None
+    project: Project, run: Run, split: str = "val", reason: str | None = None, force: bool = False
 ) -> dict[str, Any]:
     if split not in ("train", "val", "test"):
         raise ValueError("split must be train, val or test")
@@ -75,6 +75,15 @@ def evaluate(
             f"Run {run.id} is {run.meta.get('status')}; only completed runs can be evaluated."
         )
 
+    if split == "test" and not force:
+        cached = run.eval_result("test")
+        if cached is not None:
+            cached = dict(cached)
+            cached["warnings"] = [
+                "cached result: this run was already evaluated on test; no new test access was "
+                "recorded (use --force to recompute)"
+            ]
+            return cached
     if split == "test":
         ledger = test_ledger(project)
         others = sorted({e["run"] for e in ledger if e["run"] != run.id})
