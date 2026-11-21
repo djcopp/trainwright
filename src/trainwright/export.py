@@ -149,7 +149,11 @@ def export_run(
         shutil.rmtree(out)
     out.mkdir(parents=True)
     split = require_split(project, get_records(project))
-    test_eval = run.eval_result("test")
+    # a production (final) model has no held-out score of its own: report its parent's
+    held_out = run
+    if meta.get("kind") == "final" and meta.get("parent"):
+        held_out = Run(project.runs_dir / meta["parent"])
+    test_eval = held_out.eval_result("test")
     bundle: dict[str, Any] = {
         "format": "trainwright-bundle/1",
         "run": run.id,
@@ -158,7 +162,8 @@ def export_run(
         "task": cfg.task,
         "classes": split.get("classes"),
         "primary_metric": cfg.metric,
-        "val_metrics": summary.get("val"),
+        "val_metrics": held_out.summary.get("val"),
+        "metrics_from_run": held_out.id,
         "test_metrics": test_eval["metrics"] if test_eval else None,
         "exported_at": now_iso(),
         "split_hash": split["split_hash"],

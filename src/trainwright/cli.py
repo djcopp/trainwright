@@ -1007,8 +1007,13 @@ def export(
     project = _project()
     run = resolve_ref(project, ref)
     warnings = []
-    if not run.eval_result("test"):
-        warnings.append(f"{run.id} has no test evaluation; the model card will say so")
+    from .tracking import Run as _Run
+
+    src = run
+    if run.meta.get("kind") == "final" and run.meta.get("parent"):
+        src = _Run(project.runs_dir / run.meta["parent"])
+    if not src.eval_result("test"):
+        warnings.append(f"{src.id} has no test evaluation; the model card will say so")
     res = export_run(project, run, out, force)
     if res.get("parity_ok") is False:
         warnings.append(f"ONNX output differs from torch by {res['parity_max_abs_diff']:.2e}")

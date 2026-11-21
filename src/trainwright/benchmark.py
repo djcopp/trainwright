@@ -57,6 +57,11 @@ def benchmark_bundle(
     lat = np.array(_time_calls(lambda: pred.predict(one))) * 1000
     tput_times = _time_calls(lambda: pred.predict(batch), min_iters=5, min_seconds=3.0)
     throughput = batch_size / float(np.median(tput_times))
+    model_only = None
+    if meta.get("kind") == "onnx":
+        feats = pred.featurise(batch)
+        mt = _time_calls(lambda: pred.session.run(None, feats), min_iters=5, min_seconds=2.0)
+        model_only = batch_size / float(np.median(mt))
 
     model_file = bundle_dir / ("model.onnx" if meta.get("kind") == "onnx" else "model.joblib")
     size_mb = sum(f.stat().st_size for f in bundle_dir.glob(model_file.name + "*")) / 1e6
@@ -72,6 +77,7 @@ def benchmark_bundle(
     result = {
         "bundle": str(bundle_dir),
         "run": meta.get("run"),
+        "modality": meta.get("modality"),
         "model": meta.get("model"),
         "measured_at": now_iso(),
         "measured_on": {
@@ -87,6 +93,8 @@ def benchmark_bundle(
             "n": len(lat),
         },
         "throughput_per_s": round(throughput, 1),
+        "model_only_throughput_per_s": round(model_only, 1) if model_only else None,
+        "preprocessing_share": round(1 - throughput / model_only, 3) if model_only else None,
         "throughput_batch_size": batch_size,
         "val_metrics": meta.get("val_metrics"),
         "test_metrics": meta.get("test_metrics"),
@@ -119,7 +127,21 @@ def format_benchmark(b: dict[str, Any]) -> str:
         f"bundle {_short(b['bundle'])}  ({b['model']}, {b['model_size_mb']} MB)",
         f"latency (batch 1, {b['measured_on']['cpu_threads']} CPU threads): p50 {b['latency_ms_batch1']['p50']:.2f} ms, "
         f"p95 {b['latency_ms_batch1']['p95']:.2f} ms",
-        f"throughput (batch {b['throughput_batch_size']}): {b['throughput_per_s']:,.0f} predictions/s",
+        f"throughput (batch {b['throughput_batch_size']}): {b['throughput_per_s']:,.0f} predictions/s end-to-end"
+        + (
+            f" ({b['model_only_throughput_per_s']:,.0f}/s model only; preprocessing is "
+            f"{b['preprocessing_share']:.0%} of the time"
+            + (
+                {
+                    "image": ": resize images client-side to cut cost)",
+                    "text": ": tokenisation dominates)",
+                }.get(b.get("modality") or "", ": features.py / row conversion dominates; batch requests)")
+                if (b.get("preprocessing_share") or 0) > 0.5
+                else ")"
+            )
+            if b.get("model_only_throughput_per_s")
+            else ""
+        ),
         "",
         "cost per 1M predictions (ESTIMATE; edit `cost:` in trainwright.yaml):",
         f"  small model on {a['instance_name']} @ ${a['instance_usd_per_hour']}/h: ${c['small_model_usd_per_1m_predictions']:,.4f}",
