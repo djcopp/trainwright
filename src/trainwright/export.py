@@ -71,6 +71,9 @@ def _example_inputs(dm: Any, n: int = 4) -> dict[str, torch.Tensor]:
 
 def export_onnx(task: Any, dm: Any, path: Path) -> dict[str, Any]:
     model = task.model.cpu().eval()
+    for m in model.modules():  # trace the real computation, not the training-time feature cache
+        if hasattr(m, "cache_features"):
+            m.cache_features = False
     example = _example_inputs(dm)
     present = [k for k, v in example.items() if v.ndim < 2 or v.shape[1] > 0]
     absent = {k: (0, v.dtype) for k, v in example.items() if k not in present}

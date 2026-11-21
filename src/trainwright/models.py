@@ -335,14 +335,55 @@ class ImagePretrained(nn.Module):
             net = getattr(tvm, fn_name)(weights=weights)
             self.backbone, d = _strip_head(net)
         self.pretrained_backbone = pretrained
+        self.frozen = freeze_backbone
         if freeze_backbone:  # linear probe: only the head trains (fast, strong on small data)
             for p in self.backbone.parameters():
                 p.requires_grad_(False)
         self.normalize = Normalize(IMAGENET_MEAN, IMAGENET_STD)
         self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(d, int(spec.get("n_outputs", 1))))
+        # frozen backbone + unaugmented inputs -> each image's features never change, so compute
+        # them once (keyed by a random projection of the pixels) and train the head on the cache
+        self.cache_features = freeze_backbone
+        self._cache: dict[tuple[int, int], torch.Tensor] = {}
+        self._proj: torch.Tensor | None = None
+
+    def train(self, mode: bool = True) -> ImagePretrained:
+        super().train(mode)
+        if self.frozen:
+            self.backbone.eval()  # frozen means frozen: no BatchNorm/dropout updates either
+        return self
+
+    def _keys(self, x: torch.Tensor) -> list[tuple[int, int]]:
+        flat = x.flatten(1).float()
+        if (
+            self._proj is None
+            or self._proj.shape[0] != flat.shape[1]
+            or self._proj.device != x.device
+        ):
+            g = torch.Generator().manual_seed(1234)
+            self._proj = torch.randn(flat.shape[1], 2, generator=g).to(x.device)
+        with torch.autocast(x.device.type, enabled=False):
+            k = (flat @ self._proj).mul(1e4).round().long().cpu().tolist()
+        return [(a, b) for a, b in k]
+
+    def features(self, image: torch.Tensor) -> torch.Tensor:
+        x = self.normalize(image)
+        if not self.frozen:
+            return self.backbone(x)
+        tracing = torch.jit.is_tracing() or torch.onnx.is_in_onnx_export()
+        if not self.cache_features or tracing:
+            return self.backbone(x)
+        keys = self._keys(image)
+        miss = [i for i, k in enumerate(keys) if k not in self._cache]
+        if miss:
+            with torch.no_grad():
+                f = self.backbone(x[miss]).float()
+            for i, row in zip(miss, f):
+                self._cache[keys[i]] = row.detach()
+        return torch.stack([self._cache[k] for k in keys]).to(x.device)
 
     def forward(self, image: torch.Tensor) -> torch.Tensor:
-        return self.head(self.backbone(self.normalize(image)))
+        return self.head(self.features(image))
 
 
 @register_model(
@@ -524,9 +565,9 @@ class TextPretrained(nn.Module):
         "optim.lr": 1e-2,
         "optim.weight_decay": 1e-4,
         "train.label_smoothing": 0.0,
-        "train.max_epochs": 30,
-        "train.patience": 10,
-        "preprocess.augment": "light",
+        "train.max_epochs": 60,
+        "train.patience": 15,
+        "preprocess.augment": "none",  # lets the frozen features be computed once and cached
     },
 )
 class ImageProbe(ImagePretrained):
