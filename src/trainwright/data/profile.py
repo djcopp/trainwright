@@ -528,9 +528,13 @@ def profile(records: Records, cfg: ProjectConfig, state_dir: Path | None = None)
         out["image"] = profile_images(records, cfg, sheet)
         im = out["image"]
         if im.get("contact_sheet"):
-            recs.append(
-                f"Open {im['contact_sheet']} and look at the images per class before training."
-            )
+            sheet_rel = im["contact_sheet"]
+            if state_dir is not None:
+                try:
+                    sheet_rel = str(Path(sheet_rel).relative_to(state_dir.parent))
+                except ValueError:
+                    pass
+            recs.append(f"Open {sheet_rel} and look at the images per class before training.")
         if im["corrupt_in_sample"]:
             recs.append(
                 f"{len(im['corrupt_in_sample'])} unreadable image(s) in the sample; remove them."

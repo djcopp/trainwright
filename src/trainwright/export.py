@@ -102,6 +102,7 @@ def export_onnx(task: Any, dm: Any, path: Path) -> dict[str, Any]:
                 input_names=present,
                 output_names=["output"],
                 dynamic_shapes={"args": tuple({0: batch} for _ in present)},
+                external_data=sum(p.numel() for p in model.parameters()) * 4 > 1.8e9,
                 dynamo=True,
                 verbose=False,
             )

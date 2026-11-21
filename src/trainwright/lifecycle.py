@@ -258,10 +258,15 @@ def write_report(project: Project) -> Path:
     for r in list_runs(project.runs_dir):
         meta = r.meta
         s = r.summary
-        v = (s.get("val") or {}).get(m)
+        v = (s.get("val") or {}).get(m) if meta.get("kind") != "final" else None
         L.append(
             f"- `{r.id}` [{meta.get('status')}] {meta.get('hypothesis') or '(no hypothesis)'}"
             + (f" → val {m} {v:.4f}" if isinstance(v, (int, float)) else "")
+            + (
+                " (production model; val is in its training data)"
+                if meta.get("kind") == "final"
+                else ""
+            )
         )
     L.append("")
 
@@ -322,5 +327,10 @@ def write_report(project: Project) -> Path:
         L.append(f"- [{'x' if s['done'] else ' '}] {s['stage']}: {s['detail']}")
     L.append("")
     path = rd / "REPORT.md"
+    L = [line.replace(str(project.root) + "/", "") for line in L]  # project-relative paths
+    L = [
+        line.replace("- [ ] report: reports/REPORT.md", "- [x] report: reports/REPORT.md")
+        for line in L
+    ]
     path.write_text("\n".join(L))
     return path
