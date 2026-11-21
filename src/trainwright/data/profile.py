@@ -243,7 +243,26 @@ def _group_scan(
         eta = 1 - within / max(tot, 1e-12)
         adj = eta - (k - 1) / (n - 1)
         named = bool(_name_tokens(col) & _KEY_HINT)
-        if not ((named and adj > 0.05) or adj > 0.25):
+        # measurements relate to other features smoothly/monotonically; keys arbitrarily.
+        rank = s.rank().to_numpy(dtype=float)
+        rank = (rank - rank.mean()) / (rank.std() or 1.0)
+        lin = (
+            float(
+                np.mean(
+                    [
+                        np.corrcoef(rank, others[c].to_numpy())[0, 1] ** 2
+                        for c in others.columns
+                        if others[c].std() > 0
+                    ]
+                )
+            )
+            if len(others.columns)
+            else 0.0
+        )
+        arbitrary = (eta - lin) / max(eta, 1e-9)
+        if (named and adj > 0.05) or (adj > 0.25 and arbitrary > 0.6):
+            pass
+        else:
             continue
         key = s.astype(str).to_numpy()
         lift = None
@@ -265,6 +284,7 @@ def _group_scan(
                 "rows_per_group": round(n / k, 1),
                 "feature_similarity": round(adj, 3),
                 "key_like_name": named,
+                "non_monotonic_share": round(arbitrary, 3),
                 "label_lift": None if lift is None else round(lift, 3),
             }
         )
