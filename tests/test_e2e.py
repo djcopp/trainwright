@@ -6,7 +6,7 @@ import json
 
 import numpy as np
 
-FAST = ["-o", "train.device=cpu"]
+FAST = ["-o", "train.device=cpu", "-o", "train.min_steps=0"]
 
 
 def test_tabular_classification_lifecycle(tabular_project):
@@ -320,3 +320,29 @@ def test_predict_prefers_the_finalized_model(tabular_project):
     fid = tw("finalize", rid)["result"]["run"]
     after = tw("predict", rid, "-i", "new.csv", "--out", "p.csv")["result"]
     assert after["model"] == fid
+
+
+def test_auto_runs_the_whole_search_and_finalizes(regression_project):
+    tw = regression_project
+    tw("init", "--data", "houses.csv", "--target", "price")
+    res = tw("auto", "--budget", "90s", *FAST, "-o", "train.max_epochs=6")["result"]
+    assert res["best"] is not None and res.get("final")
+    models = {r["model"] for r in tw("runs")["result"]}
+    assert {"baseline:hist_gbm", "tabular_mlp"} <= models
+    # rerunning skips everything that is already up to date
+    again = tw("auto", "--budget", "60s", *FAST, "-o", "train.max_epochs=6", "--no-seeds")
+    assert not any("baselines:" in line for line in again["result"]["log"])
+
+
+def test_profile_flags_a_target_that_is_a_sum_of_columns():
+    import pandas as pd
+
+    from trainwright.data.profile import _leakage_scan
+
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame({"temp": rng.normal(size=2000), "hour": rng.integers(0, 24, 2000)})
+    y = np.exp(df["temp"]) * 50 + df["hour"] * 3
+    share = rng.uniform(0, 1, 2000)
+    df["casual"], df["registered"] = y * share, y * (1 - share)
+    leaks = _leakage_scan(df, y.to_numpy(), "regression")
+    assert leaks and set(leaks[0]["column"].split(", ")) == {"casual", "registered"}

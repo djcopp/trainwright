@@ -66,22 +66,22 @@ def status(project: Project) -> dict[str, Any]:
             f"{split['strategy']} split {split['counts']} (hash {split_hash})"
             if split
             else "no frozen split",
-            "trainwright split",
-            "freeze train/val/test once so every run is comparable and test stays sealed",
+            "trainwright auto --budget 15m",
+            "one command: freeze the split, baselines, strong recipes, ensemble, finalize (stops on time)",
         ),
         _step(
             "baselines",
             bool(baselines),
             f"{len(baselines)} baseline run(s)",
-            "trainwright baseline",
-            "establish the floor a neural model must beat",
+            "trainwright auto --budget 15m",
+            "baselines plus the strong recipes for this modality, ensemble and finalize",
         ),
         _step(
             "train",
             bool(neural),
             f"{len(neural)} neural run(s)",
-            'trainwright train --hypothesis "default recipe"',
-            "train the default small model for this modality",
+            "trainwright auto --budget 15m",
+            "train the strong default recipes for this modality (or `trainwright train` by hand)",
         ),
     ]
     n_with_hyp = sum(1 for r in neural if r.meta.get("hypothesis"))

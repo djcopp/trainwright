@@ -403,38 +403,13 @@ def profile(
     ),
 ) -> None:
     """Profile the data: types, missingness, leakage suspects, imbalance, recommendations."""
-    from .data.profile import profile as _profile
-    from .pipeline import get_records
+    from .autopilot import profile_project
 
     STATE["command"] = "profile"
     project = _project()
-    records = get_records(project)
-    prof = _profile(records, project.config, project.state_dir)
-    prof["data_fingerprint"] = records.fingerprint
+    prof = profile_project(project, keep_ids=keep_ids)
     cfg = project.config
-    auto_dropped: list[str] = []
-    if "tabular" in prof and not keep_ids:
-        for c, p in prof["tabular"]["columns"].items():
-            if c not in cfg.data.drop and any(
-                f.startswith(("id-like", "constant")) for f in p.get("flags", [])
-            ):
-                auto_dropped.append(c)
-        if auto_dropped:
-            cfg.data.drop = [*cfg.data.drop, *auto_dropped]
-            project.save()
-            prof["auto_dropped"] = auto_dropped
-            prof["tabular"]["suggested_drop"] = [
-                c for c in prof["tabular"]["suggested_drop"] if c not in auto_dropped
-            ]
-            prof["recommendations"] = [
-                r for r in prof["recommendations"] if not r.startswith("Add to data.drop")
-            ]
-            if prof["tabular"]["suggested_drop"]:
-                prof["recommendations"].insert(
-                    0,
-                    f"Consider adding to data.drop: {prof['tabular']['suggested_drop']} (leakage suspects).",
-                )
-    write_json(project.profile_path, prof)
+    auto_dropped: list[str] = prof.get("auto_dropped", [])
     rec_metric = prof["recommended_metric"]
     lines = [f"{prof['n']} examples ({cfg.modality}, {cfg.task})"]
     if prof.get("dropped_missing_target"):
@@ -486,8 +461,9 @@ def profile(
         "\n".join(lines),
         [
             {
-                "command": "trainwright split",
-                "why": "freeze train/val/test (after editing data.drop if needed)",
+                "command": "trainwright auto --budget 15m",
+                "why": "after fixing data.drop / group_column / features.py: split, baselines, strong "
+                "recipes, ensemble and finalize in one time-boxed command",
             }
         ],
     )
@@ -724,6 +700,61 @@ def tune(
 
 
 # --------------------------------------------------------------------------- runs
+
+
+@app.command()
+def auto(
+    budget: str = typer.Option("20m", help="Total wall-clock budget, e.g. 10m, 1h."),
+    override: list[str] = typer.Option(
+        [], "-o", "--override", help="key=value applied to every neural run (repeatable)."
+    ),
+    finish: bool = typer.Option(
+        True, help="Refit the val-best model on train+val at the end (served by `predict`)."
+    ),
+    seeds: bool = typer.Option(
+        True, help="Add seed replicas of the best neural recipe if time allows."
+    ),
+) -> None:
+    """Run the whole search in one command: profile, split, baselines, strong recipes, ensemble, finalize."""
+    from ._utils import parse_duration
+    from .autopilot import autopilot
+    from .config import parse_override
+    from .leaderboard import format_table, leaderboard
+
+    STATE["command"] = "auto"
+    project = _project()
+    project.load_user_plugins()
+    budget_s = parse_duration(budget) or 1200.0
+    ov = dict(parse_override(o) for o in override)
+    res = autopilot(project, budget_s, ov, finish=finish, seeds=seeds, progress=progress)
+    rows = leaderboard(project)
+    best = res.get("best") or {}
+    lines = ["", format_table(rows, project.config.metric)]
+    nxt = [
+        {
+            "command": f'trainwright evaluate {best.get("id", "best")} --split test --reason "final estimate"',
+            "why": "the one honest number: score the val-picked model on the sealed test split",
+        },
+        {
+            "command": "trainwright predict <new data>",
+            "why": "serves the finalized model" if res.get("final") else "serves the best run",
+        },
+    ]
+    if project.config.modality == "tabular":
+        nxt.append(
+            {
+                "command": "trainwright features best-neural  (then write features.py and rerun auto)",
+                "why": "domain features are where you beat the search; auto skips steps already done",
+            }
+        )
+    else:
+        nxt.append(
+            {
+                "command": f"trainwright evaluate {best.get('id', 'best')}",
+                "why": "val error analysis: confusions and worst examples (label noise? missing classes?)",
+            }
+        )
+    emit(res, "\n".join(lines), nxt)
 
 
 @app.command("runs")
