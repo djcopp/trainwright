@@ -524,9 +524,14 @@ class TargetScaler:
         self.transform_name = transform
         self.mean = 0.0
         self.std = 1.0
+        self.lo: float | None = None
+        self.hi: float | None = None
 
     def fit(self, y: np.ndarray) -> TargetScaler:
-        z = self._forward_raw(np.asarray(y, dtype=np.float64))
+        y = np.asarray(y, dtype=np.float64)
+        # predictions are clipped to the training range: no negative counts, no wild extrapolation
+        self.lo, self.hi = float(np.nanmin(y)), float(np.nanmax(y))
+        z = self._forward_raw(y)
         if self.transform_name in ("standard", "log1p"):
             self.mean = float(z.mean())
             sd = float(z.std())
@@ -549,13 +554,22 @@ class TargetScaler:
         y = np.asarray(z, dtype=np.float64) * self.std + self.mean
         if self.transform_name == "log1p":
             y = np.expm1(y)
+        if self.lo is not None and self.hi is not None:
+            y = np.clip(y, self.lo, self.hi)
         return y
 
     def state_dict(self) -> dict[str, Any]:
-        return {"transform": self.transform_name, "mean": self.mean, "std": self.std}
+        return {
+            "transform": self.transform_name,
+            "mean": self.mean,
+            "std": self.std,
+            "lo": self.lo,
+            "hi": self.hi,
+        }
 
     @classmethod
     def from_state(cls, s: dict[str, Any]) -> TargetScaler:
         obj = cls(s["transform"])
         obj.mean, obj.std = s["mean"], s["std"]
+        obj.lo, obj.hi = s.get("lo"), s.get("hi")
         return obj
