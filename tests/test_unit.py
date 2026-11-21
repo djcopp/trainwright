@@ -356,3 +356,26 @@ def test_group_scan_flags_entity_keys_not_measurements():
     y = (df["f1"] > 0).astype(int).to_numpy()
     flagged = [g["column"] for g in _group_scan(df, y, "classification")]
     assert flagged == ["userId"]
+
+
+def test_every_registered_model_builds_and_runs():
+    """Catches registration/signature mistakes for every built-in architecture (no downloads)."""
+    specs = {
+        "tabular": (
+            {"n_num": 3, "cat_cardinalities": [4], "n_outputs": 2, "modality": "tabular"},
+            {"x_num": torch.randn(2, 3), "x_cat": torch.zeros(2, 1, dtype=torch.long)},
+        ),
+        "image": ({"n_outputs": 2, "modality": "image"}, {"image": torch.rand(2, 3, 64, 64)}),
+        "text": (
+            {"vocab_size": 50, "n_outputs": 2, "modality": "text"},
+            {"tokens": torch.randint(1, 50, (2, 8))},
+        ),
+    }
+    offline = {"image_pretrained": {"pretrained": False}}
+    for info in tw.list_models():
+        if info["name"] in ("text_pretrained", "tiny_test_model"):
+            continue  # needs a hub download / registered by another test
+        spec, batch = specs[info["modality"]]
+        m = tw.build_model(info["name"], spec, offline.get(info["name"], {})).eval()
+        with torch.no_grad():
+            assert m(**batch).shape == (2, 2), info["name"]

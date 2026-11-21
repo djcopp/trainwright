@@ -269,13 +269,36 @@ def _strip_head(m: nn.Module) -> tuple[nn.Module, int]:
     raise ValueError(f"Don't know how to strip the head of {type(m).__name__}")
 
 
+class _HFVisionBackbone(nn.Module):
+    """A Hugging Face ViT-style encoder (e.g. DINOv2) -> [CLS, mean(patch tokens)] features."""
+
+    def __init__(self, repo: str, pretrained: bool):
+        super().__init__()
+        from transformers import AutoConfig, AutoModel
+
+        self.net = (
+            AutoModel.from_pretrained(repo)
+            if pretrained
+            else AutoModel.from_config(AutoConfig.from_pretrained(repo))
+        )
+        self.out_dim = 2 * int(self.net.config.hidden_size)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.net(pixel_values=x).last_hidden_state
+        return torch.cat([h[:, 0], h[:, 1:].mean(1)], dim=1)
+
+
+_HF_BACKBONES = {"dinov2_small": "facebook/dinov2-small", "dinov2_base": "facebook/dinov2-base"}
+
+
 @register_model(
     "image_pretrained",
     modality="image",
     description="ImageNet-pretrained torchvision backbone + new linear head, fine-tuned end-to-end "
     "with a lower backbone LR (optim.backbone_lr_mult).",
-    when_to_use="Default for photos. resnet18 is a robust start; mobilenet_v3_large/efficientnet_b0 for "
-    "cheap CPU serving; convnext_tiny when accuracy matters more than latency.",
+    when_to_use="Default for photos. resnet18 is a robust start; dinov2_small (self-supervised ViT, "
+    "excellent features; try freeze_backbone=true first on small datasets); mobilenet_v3_large/"
+    "efficientnet_b0 for cheap CPU serving; convnext_tiny when accuracy matters more than latency.",
 )
 class ImagePretrained(nn.Module):
     def __init__(
@@ -284,21 +307,37 @@ class ImagePretrained(nn.Module):
         backbone: str = "resnet18",
         pretrained: bool = True,
         dropout: float = 0.2,
+        freeze_backbone: bool = False,
     ):
         super().__init__()
-        try:
-            import torchvision.models as tvm
-        except ImportError as e:  # pragma: no cover
-            raise ImportError(
-                "image models need torchvision: `uv add 'trainwright[vision]'`"
-            ) from e
-        if backbone not in _BACKBONES:
-            raise ValueError(f"backbone must be one of {sorted(_BACKBONES)}")
-        fn_name, weights_name = _BACKBONES[backbone]
-        weights = getattr(tvm, weights_name).DEFAULT if pretrained else None
-        net = getattr(tvm, fn_name)(weights=weights)
-        self.backbone, d = _strip_head(net)
+        if backbone in _HF_BACKBONES:
+            try:
+                hf = _HFVisionBackbone(_HF_BACKBONES[backbone], pretrained)
+            except ImportError as e:  # pragma: no cover
+                raise ImportError(
+                    f"{backbone} needs transformers: `uv add 'trainwright[text]'`"
+                ) from e
+            self.backbone: nn.Module = hf
+            d = hf.out_dim
+        else:
+            try:
+                import torchvision.models as tvm
+            except ImportError as e:  # pragma: no cover
+                raise ImportError(
+                    "image models need torchvision: `uv add 'trainwright[vision]'`"
+                ) from e
+            if backbone not in _BACKBONES:
+                raise ValueError(
+                    f"backbone must be one of {sorted(_BACKBONES) + sorted(_HF_BACKBONES)}"
+                )
+            fn_name, weights_name = _BACKBONES[backbone]
+            weights = getattr(tvm, weights_name).DEFAULT if pretrained else None
+            net = getattr(tvm, fn_name)(weights=weights)
+            self.backbone, d = _strip_head(net)
         self.pretrained_backbone = pretrained
+        if freeze_backbone:  # linear probe: only the head trains (fast, strong on small data)
+            for p in self.backbone.parameters():
+                p.requires_grad_(False)
         self.normalize = Normalize(IMAGENET_MEAN, IMAGENET_STD)
         self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(d, int(spec.get("n_outputs", 1))))
 
