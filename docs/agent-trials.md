@@ -81,4 +81,43 @@ near-identical frames in train and test. Grouping near-duplicates (256-bit dHash
 dropped that baseline to 0.33. This became trainwright's default duplicate-aware split, and the
 benchmark holdout hides whole groups.
 
-<!-- ROUND2 -->
+## Round 2 (car_parts and superconduct)
+
+| task | condition | holdout score | wall time | agent cost |
+|---|---|---|---|---|
+| car_parts | control | 0.996 acc / 0.991 macro-F1 | 6.3 min | $0.16 |
+| car_parts | trainwright | 0.989 acc / **0.992** macro-F1 | 8.2 min | $0.20 |
+| superconduct | control | **RMSE 9.60** (R² 0.923) | 8.3 min | $0.13 |
+| superconduct | trainwright | RMSE 10.87 (R² 0.901) | 8.4 min | $0.16 |
+
+**Harness note:** a second PATH bug meant rounds 1 and 2 ran the trainwright condition against
+the *live development checkout*, not the frozen build. Round 2 therefore used roughly the v0.2
+feature set, plus some of the in-progress v0.3 changes. The harness now verifies and records
+`which trainwright`, and round 3 used a frozen, non-editable v0.3.0 install.
+
+- **car_parts: tie** (2 images out of 260). The control agent's best move was frozen
+  **DINOv2-small** embeddings with logistic regression. It also noticed the burst photos and
+  grouped its CV folds by capture time. The trainwright agent fine-tuned ResNet-18, read the
+  `early_peak` diagnosis, lowered the LR, evaluated test once, finalized and benchmarked, and
+  recommended routing the 2–4% of images under 0.9 confidence to the LLM.
+- **superconduct: control better.** Both agents found that gradient boosting beats an MLP here.
+  The trainwright agent correctly shipped the HistGBM baseline because the MLP was statistically
+  tied and the baseline is simpler. But `finalize` only handled neural runs, so it shipped a model
+  trained on 70% of the data with scikit-learn's default 100 boosting rounds. The control agent
+  refit on all the data with 1,500 rounds.
+- The group-key detector flagged `range_atomic_radius`, a physical measurement. The agent
+  correctly ignored it.
+
+### Changes made because of round 2
+
+| finding | change |
+|---|---|
+| frozen self-supervised features win on small image sets | `backbone=dinov2_small/base` and `freeze_backbone=true` (linear probe); playbook step |
+| shipped baseline was undertrained and fit on 70% of the data | HistGBM baseline uses up to 1,000 early-stopped rounds; `finalize` refits baselines on train+val |
+| `evaluate --split test` warned about choosing a run tied with the leader | warning suppressed for statistically tied runs |
+| measurement flagged as a group key | detector requires the relationship to be non-monotonic (ID-like), not smooth |
+| ONNX weights in a sidecar file were reported as a 0.13 MB model | single-file bundles under 1.8 GB; size counts all model files |
+| the MCP server failed on `mcp` 2.x (`FastMCP` renamed) | supports both versions; tested |
+
+<!-- ROUND3 -->
+
