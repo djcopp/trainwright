@@ -158,6 +158,28 @@ rounds 1–2, since their environment didn't change.
 | exporting a production model warned "no test evaluation" | bundles and model cards report the parent run's held-out metrics |
 | benchmark throughput was dominated by resizing 12 MP photos, not the model | benchmark reports model-only vs end-to-end throughput and what dominates |
 
-<!-- ROUND4 -->
+## Round 4 (v0.3.1: the two round-3 fixes, car_parts and superconduct only)
+
+| task | metric | trainwright r3 | **trainwright r4** | control |
+|---|---|---|---|---|
+| car_parts | macro-F1 | 0.971 | **1.000** (accuracy 1.000) | 0.991 (accuracy 0.996) |
+| superconduct | RMSE ↓ | 10.16 | **9.83** | 9.60 |
+
+The car-parts agent compared `image_probe` with the fine-tuned ResNet-18 and picked the probe.
+For superconduct, including the already-scored test data in the production model closed
+most of the gap.
+
+### Seed luck (found while building ensembles after round 4)
+
+Retraining eye_movements' best MLP recipe with two more seeds gave val accuracy 0.797 and
+0.818, against 0.853 for the original. The bootstrap standard error was ±0.009, so seed noise
+dwarfed validation-sample noise. On test, the three-seed average (0.819) matched the luckiest seed
+(0.817), while the other seeds scored 0.787 and 0.798. A single run is a gamble, so
+`trainwright ensemble --seeds N` now reports the seed spread and records the seed average. The
+playbook asks agents to use their whole budget (features, other model families, tune, then a seed
+ensemble) rather than stopping after the first pass.
+
+<!-- ROUND5 -->
+
 
 

@@ -348,6 +348,56 @@ def score_trial(tasks: Path, tdir: Path) -> dict:
     return res
 
 
+def _fmt(xs: list[float]) -> str:
+    if not xs:
+        return "-"
+    rng = f" ({min(xs):.3f} to {max(xs):.3f})" if len(xs) > 1 else ""
+    return f"{np.mean(xs):.3f}{rng}"
+
+
+def summary_table(tasks: Path, trial_dirs: list[Path], tw_tags: list[str]) -> str:
+    rows = []
+    for d in trial_dirs:
+        if d.exists():
+            rows += [
+                score_trial(tasks, t)
+                for t in sorted(d.iterdir())
+                if t.is_dir() and (t.parent / f"{t.name}.meta.json").exists()
+            ]
+    out = [
+        "| task | metric | straight prompt (control) | trainwright | runs (control / tw) |",
+        "|---|---|---|---|---|",
+    ]
+    for task, spec in TASKS.items():
+        key = "rmse" if spec["task"] == "regression" else "accuracy"
+        ctrl = [
+            r["score"][key]
+            for r in rows
+            if r.get("task") == task and r.get("condition") == "control" and r.get("score")
+        ]
+        tw = [
+            r["score"][key]
+            for r in rows
+            if r.get("task") == task
+            and r.get("condition") == "trainwright"
+            and r.get("tag") in tw_tags
+            and r.get("score")
+        ]
+        better = None
+        if ctrl and tw:
+            better = (
+                (np.mean(tw) < np.mean(ctrl)) if key == "rmse" else (np.mean(tw) > np.mean(ctrl))
+            )
+        tw_cell = _fmt(tw)
+        if better:
+            tw_cell = f"**{tw_cell}**"
+        ctrl_cell = f"**{_fmt(ctrl)}**" if better is False else _fmt(ctrl)
+        out.append(
+            f"| {task} | {key}{' ↓' if key == 'rmse' else ''} | {ctrl_cell} | {tw_cell} | {len(ctrl)} / {len(tw)} |"
+        )
+    return "\n".join(out)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -363,6 +413,15 @@ def main() -> None:
     r.add_argument("--tasks", type=Path, default=ROOT / "scratch" / "tasks")
     # trials run OUTSIDE the repo so agents can't wander into hidden labels or other trials
     r.add_argument("--trials", type=Path, default=Path.home() / ".cache" / "trainwright-trials")
+    t = sub.add_parser("summary", help="Markdown table averaging replicates across trial dirs")
+    t.add_argument("--tasks", type=Path, default=ROOT / "scratch" / "tasks")
+    t.add_argument(
+        "--trials",
+        type=Path,
+        nargs="+",
+        default=[ROOT / "scratch" / "trials", Path.home() / ".cache" / "trainwright-trials"],
+    )
+    t.add_argument("--trainwright-tags", nargs="+", default=["v5a", "v5b"])
     s = sub.add_parser("score")
     s.add_argument("--tasks", type=Path, default=ROOT / "scratch" / "tasks")
     s.add_argument("--trials", type=Path, default=Path.home() / ".cache" / "trainwright-trials")
@@ -372,6 +431,8 @@ def main() -> None:
     elif a.cmd == "run":
         a.trials.mkdir(parents=True, exist_ok=True)
         run_trial(a.tasks, a.trials, a.task, a.condition, a.model, a.timeout_min, a.tag)
+    elif a.cmd == "summary":
+        print(summary_table(a.tasks, a.trials, a.trainwright_tags))
     else:
         rows = [score_trial(a.tasks, d) for d in sorted(a.trials.iterdir()) if d.is_dir()]
         print(json.dumps(rows, indent=2, default=str))
