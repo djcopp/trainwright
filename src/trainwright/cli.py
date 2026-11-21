@@ -930,6 +930,42 @@ def evaluate(
     emit(res, "\n".join(lines), nxt, res.get("warnings"))
 
 
+@app.command()
+def finalize(
+    ref: str = typer.Argument("best-neural"),
+    include_test: bool = typer.Option(
+        False,
+        help="Also train on the test split (only after the final test evaluation is recorded).",
+    ),
+) -> None:
+    """Retrain the selected run's recipe on train+val for its best epoch count: the production model."""
+    from .pipeline import finalize as _finalize
+
+    STATE["command"] = "finalize"
+    project = _project()
+    from .leaderboard import resolve_ref
+
+    run = resolve_ref(project, ref)
+    warnings = []
+    if include_test and not run.eval_result("test"):
+        raise CLIError(
+            f"{run.id} has no recorded test evaluation.",
+            f"Run `trainwright evaluate {run.id} --split test` first: once test is in the training data it can never be evaluated.",
+        )
+    if not run.eval_result("test"):
+        warnings.append(
+            f"{run.id} has no test evaluation yet; record it before shipping the final model"
+        )
+    final = _finalize(project, run, include_test, progress=progress)
+    emit(
+        {"run": final.id, "parent": run.id, "trained_on": final.meta.get("trained_on")},
+        f"final model {final.id}: {run.id}'s recipe on {'+'.join(final.meta.get('trained_on', []))} "
+        f"({final.summary.get('epochs_run')} epochs). Quote {run.id}'s held-out val/test numbers for it.",
+        [{"command": f"trainwright export {final.id}", "why": "ship the production model"}],
+        warnings,
+    )
+
+
 # --------------------------------------------------------------------------- deploy
 
 

@@ -94,6 +94,7 @@ class Trainer:
         eval_train_metrics: bool = True,
         progress: Callable[[str], None] | None = print,
         restore_best: bool = True,
+        save_last: bool = False,
     ):
         self.max_epochs = max_epochs
         self.device = resolve_device(device)
@@ -112,6 +113,7 @@ class Trainer:
         self.eval_train_metrics = eval_train_metrics
         self.progress = progress
         self.restore_best = restore_best
+        self.save_last = save_last
         # state
         self.epoch = 0
         self.best_score = math.inf if mode == "min" else -math.inf
@@ -250,7 +252,12 @@ class Trainer:
 
         for cb in self.callbacks:
             cb.on_fit_end(self, task)
-        if self.restore_best and self._best_state is not None:
+        if self.save_last and self.history:
+            # e.g. `finalize`: no held-out val, so keep the weights after the planned epochs
+            self._save_best(task, self.history[-1])
+            self.best_epoch, self.best_row = self.history[-1]["epoch"], dict(self.history[-1])
+            self.best_score = self.history[-1].get(self.monitor, float("nan"))
+        elif self.restore_best and self._best_state is not None:
             task.model.load_state_dict(self._best_state)
         reason = self._stop_reason or f"completed max_epochs={self.max_epochs}"
         res = FitResult(

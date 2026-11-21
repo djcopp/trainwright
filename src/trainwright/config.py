@@ -217,6 +217,14 @@ def default_experiment(project: ProjectConfig) -> ExperimentConfig:
             preprocess=PreprocessConfig(image_size=224, augment="light"),
         )
     if project.modality == "text":
+        import importlib.util
+
+        if importlib.util.find_spec("transformers") is not None:
+            # a small pretrained encoder beats bag-of-ngrams on most real text tasks
+            base = ExperimentConfig(model=ModelConfig(name="text_pretrained")).model_dump()
+            return ExperimentConfig.model_validate(
+                apply_overrides(base, _model_recipe("text_pretrained"))
+            )
         return ExperimentConfig(
             model=ModelConfig(
                 name="text_bag", params={"embed_dim": 128, "hidden": 256, "dropout": 0.3}

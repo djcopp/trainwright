@@ -534,6 +534,8 @@ def _wrap(findings: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
 def diagnose_run(project: Project, run: Run) -> dict[str, Any]:
     cfg = project.config
     summary = run.summary
+    if run.meta.get("kind") == "final":
+        return {"verdict": "final", "findings": [], "next_experiments": []}
     if summary.get("kind") == "baseline":
         return {"verdict": "baseline", "findings": [], "next_experiments": []}
     exp = yaml.safe_load(run.config_path.read_text()) if run.config_path.exists() else {}

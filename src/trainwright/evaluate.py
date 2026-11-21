@@ -104,6 +104,11 @@ def evaluate(
             )
 
     kind = run.meta.get("kind")
+    if kind == "final" and (split in run.meta.get("trained_on", [])):
+        raise LifecycleError(
+            f"{run.id} was trained on {split}; evaluating it there is meaningless. Quote the parent "
+            f"run {run.meta.get('parent')}'s held-out numbers."
+        )
     paths = np.array([])
     if kind == "baseline":
         outputs, y, ids, paths = _baseline_outputs(project, run, split)

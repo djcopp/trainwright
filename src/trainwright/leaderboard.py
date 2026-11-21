@@ -57,6 +57,8 @@ def leaderboard(
             continue
         if kind and row["kind"] != kind:
             continue
+        if row["kind"] == "final" and kind != "final":
+            continue  # trained on val: its val score is not comparable
         rows.append(row)
     key = f"val_{cfg.metric}"
     sign = -1 if cfg.metric_mode == "max" else 1

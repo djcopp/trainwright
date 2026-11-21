@@ -239,3 +239,19 @@ def test_feature_hook_is_fitted_tracked_and_shipped(tabular_project):
     bexp = tw("export", gbm)["result"]
     assert Predictor(bexp["dir"]).predict([{"a": 1.0, "b": 2.0, "c": 0.0, "d": 0.0, "colour": "red"}])
     assert tw("features", rid, "--repeats", "1")["result"]["importances"]
+
+
+def test_finalize_trains_on_train_plus_val(tabular_project):
+    tw = tabular_project
+    tw("init", "--data", "data.csv")
+    tw("split")
+    rid = tw("train", *FAST, "-o", "train.max_epochs=3", "-H", "base")["result"]["run"]
+    fin = tw("finalize", rid)
+    assert any("no test evaluation" in w for w in fin["warnings"])
+    fid = fin["result"]["run"]
+    meta = json.loads((tw.root / "runs" / fid / "meta.json").read_text())
+    assert meta["kind"] == "final" and meta["trained_on"] == ["train", "val"] and meta["parent"] == rid
+    assert fid not in [r["id"] for r in tw("runs")["result"]]  # val score is not held out
+    bad = tw("evaluate", fid, "--split", "val", ok=False)
+    assert bad.get("ok") is False or bad.get("exception") is not None
+    assert tw("export", fid)["result"]["parity_ok"]

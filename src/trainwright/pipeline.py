@@ -104,16 +104,21 @@ def train(
     parent: str | None = None,
     tags: list[str] | None = None,
     progress: Callable[[str], None] | None = print,
+    split_override: dict[str, Any] | None = None,
+    kind: str = "neural",
+    extra_meta: dict[str, Any] | None = None,
 ) -> Run:
     cfg = project.config
     project.ensure_dirs()
     project.load_user_plugins()
     records = get_records(project)
     split, created = ensure_split(project, records)
+    if split_override is not None:
+        split = split_override
     run = Run.create(
         project.runs_dir,
         name or exp.model.name,
-        kind="neural",
+        kind=kind,
         hypothesis=hypothesis,
         tags=tags,
         parent=parent,
@@ -123,6 +128,7 @@ def train(
             "model": exp.model.name,
             "split_hash": split["split_hash"],
             "data_fingerprint": records.fingerprint,
+            **(extra_meta or {}),
         },
     )
     (run.config_path).write_text(dump_yaml(exp))
@@ -186,6 +192,7 @@ def train(
             },
             eval_train_metrics=exp.train.eval_train_metrics,
             progress=progress,
+            save_last=kind == "final",
         )
         result = trainer.fit(task, datamodule=dm)
         best = result.best_row
@@ -216,7 +223,7 @@ def train(
                     ck["temperature"] = t
                     torch.save(ck, run.best_checkpoint)
         summary = {
-            "kind": "neural",
+            "kind": kind,
             "model": exp.model.name,
             "n_params": n_params,
             "device": device,
@@ -364,3 +371,50 @@ def softmax_np(x: np.ndarray) -> np.ndarray:
     z = x - x.max(axis=1, keepdims=True)
     e = np.exp(z)
     return e / e.sum(axis=1, keepdims=True)
+
+
+def finalize(
+    project: Project,
+    run: Run,
+    include_test: bool = False,
+    progress: Callable[[str], None] | None = print,
+) -> Run:
+    """Retrain a selected run's exact recipe on train+val (+test) for its best number of epochs.
+
+    The result is the production model. Its "val" numbers are NOT held out (val is in its
+    training data); quote the parent run's val/test numbers instead.
+    """
+    import yaml
+
+    if run.meta.get("kind") != "neural":
+        raise LifecycleError("finalize needs a completed neural run.")
+    records = get_records(project)
+    split = require_split(project, records)
+    exp = ExperimentConfig.model_validate(yaml.safe_load(run.config_path.read_text()))
+    epochs = int(run.summary.get("best_epoch") or exp.train.max_epochs)
+    exp = exp.model_copy(
+        update={
+            "train": exp.train.model_copy(
+                update={"max_epochs": max(1, epochs), "patience": None, "time_budget": None}
+            )
+        }
+    )
+    parts = ["train", "val"] + (["test"] if include_test else [])
+    merged = dict(split)
+    merged["train"] = sorted({i for p in parts for i in split[p]})
+    return train(
+        project,
+        exp,
+        name=f"final-{run.id}",
+        parent=run.id,
+        tags=["final"],
+        hypothesis=f"production model: {run.id}'s recipe retrained on {'+'.join(parts)} for {epochs} epochs",
+        progress=progress,
+        split_override=merged,
+        kind="final",
+        extra_meta={
+            "trained_on": parts,
+            "includes_test": include_test,
+            "split_hash": split["split_hash"],
+        },
+    )
