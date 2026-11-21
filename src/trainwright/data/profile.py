@@ -415,5 +415,33 @@ def profile(records: Records, cfg: ProjectConfig, state_dir: Path | None = None)
             "If left/right orientation matters for your labels (e.g. left vs right parts), "
             "set preprocess.hflip=false."
         )
+    try:
+        from .dedup import duplicate_groups
+
+        _, dstats = duplicate_groups(
+            records, cfg.split.near_duplicate_threshold, state_dir / "cache" if state_dir else None
+        )
+        out["duplicates"] = dstats
+        share = dstats["share_with_duplicates"]
+        if share > 0.01:
+            recs.insert(
+                0,
+                f"{share:.0%} of examples have a duplicate or near-duplicate ({dstats['method']}; "
+                f"{dstats['n_groups']} distinct groups, largest {dstats['largest_group']}). "
+                + (
+                    "The split keeps each group inside one split (split.dedup=true) so scores are not "
+                    "inflated by near-copies."
+                    if cfg.split.dedup
+                    else "split.dedup is OFF: near-copies will leak across splits and inflate scores."
+                ),
+            )
+        if dstats["groups_with_conflicting_labels"]:
+            recs.insert(
+                0,
+                f"{dstats['groups_with_conflicting_labels']} duplicate group(s) carry DIFFERENT labels: "
+                "likely label noise; inspect them.",
+            )
+    except Exception as e:  # pragma: no cover - profiling must not fail on dedup
+        out["duplicates_error"] = str(e)
     out["recommendations"] = recs
     return out

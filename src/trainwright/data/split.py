@@ -30,7 +30,12 @@ def resolve_strategy(cfg: ProjectConfig) -> str:
     return "stratified" if cfg.task == "classification" else "random"
 
 
-def make_split(records: Records, cfg: ProjectConfig) -> dict[str, Any]:
+def make_split(
+    records: Records,
+    cfg: ProjectConfig,
+    dup_groups: np.ndarray | None = None,
+    dup_stats: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     strategy = resolve_strategy(cfg)
     rng = np.random.default_rng(cfg.split.seed)
     n = len(records)
@@ -70,33 +75,58 @@ def make_split(records: Records, cfg: ProjectConfig) -> dict[str, Any]:
             idx[parts == "val"],
             idx[parts == "test"],
         )
-    elif strategy == "stratified":
+    elif strategy in ("stratified", "random"):
+        # Allocate *units* (groups of duplicates/near-duplicates, singletons otherwise) so that
+        # no duplicate group straddles splits. Without duplicates this is a plain item split.
+        units = dup_groups if dup_groups is not None else np.array([str(i) for i in idx])
+        unit_members: dict[str, list[int]] = {}
+        for i, u in enumerate(units.tolist()):
+            unit_members.setdefault(u, []).append(i)
+        if strategy == "stratified":
+            labels = records.y.astype(str)
+            by_class: dict[str, list[str]] = {}
+            for u, mem in unit_members.items():
+                maj = Counter(labels[mem].tolist()).most_common(1)[0][0]
+                by_class.setdefault(maj, []).append(u)
+            pools = [(c, by_class[c]) for c in sorted(by_class)]
+        else:
+            pools = [("all", list(unit_members))]
         train_l, val_l, test_l = [], [], []
-        labels = records.y.astype(str)
-        for cls in sorted(set(labels.tolist())):
-            members = idx[labels == cls]
-            rng.shuffle(members)
-            m = len(members)
-            if m < 3:
-                warnings.append(f"class {cls!r} has only {m} example(s); all placed in train")
-                train_l.append(members)
+        for cls, us in pools:
+            order = rng.permutation(len(us))
+            us = [us[k] for k in order]
+            m = sum(len(unit_members[u]) for u in us)
+            if strategy == "stratified" and len(us) < 3:
+                warnings.append(
+                    f"class {cls!r} has only {len(us)} distinct example group(s); all placed in train"
+                )
+                train_l += [i for u in us for i in unit_members[u]]
                 continue
-            n_test = max(1, int(round(m * test_f)))
-            n_val = max(1, int(round(m * val_f)))
-            test_l.append(members[:n_test])
-            val_l.append(members[n_test : n_test + n_val])
-            train_l.append(members[n_test + n_val :])
+            t_test = max(1, int(round(m * test_f)))
+            t_val = max(1, int(round(m * val_f)))
+            n_test = n_val = 0
+            for u in us:
+                mem = unit_members[u]
+                if n_test < t_test and (n_test + len(mem) <= t_test * 1.5 or n_test == 0):
+                    test_l += mem
+                    n_test += len(mem)
+                elif n_val < t_val and (n_val + len(mem) <= t_val * 1.5 or n_val == 0):
+                    val_l += mem
+                    n_val += len(mem)
+                else:
+                    train_l += mem
         train_idx, val_idx, test_idx = (
-            np.sort(np.concatenate(x)) if x else np.array([], int) for x in (train_l, val_l, test_l)
+            np.array(sorted(x), dtype=int) for x in (train_l, val_l, test_l)
         )
-    elif strategy == "random":
-        perm = rng.permutation(n)
-        n_test, n_val = int(round(n * test_f)), int(round(n * val_f))
-        test_idx, val_idx, train_idx = (
-            perm[:n_test],
-            perm[n_test : n_test + n_val],
-            perm[n_test + n_val :],
-        )
+        if dup_groups is not None and (len(val_idx) == 0 or len(test_idx) == 0):
+            # grouping too coarse (e.g. near-identical synthetic images): fall back loudly
+            fallback = make_split(records, cfg, None, {**(dup_stats or {}), "fallback": True})
+            fallback["warnings"].insert(
+                0,
+                f"near-duplicate grouping produced only {len(unit_members)} groups, too few to fill "
+                "val/test; fell back to an item-level split. Scores may be inflated by near-copies.",
+            )
+            return fallback
     else:
         raise ValueError(f"Unknown split strategy {strategy}")
 
@@ -109,6 +139,7 @@ def make_split(records: Records, cfg: ProjectConfig) -> dict[str, Any]:
         "created_at": now_iso(),
         "counts": {"train": len(train_idx), "val": len(val_idx), "test": len(test_idx)},
         "warnings": warnings,
+        "dedup": dup_stats if strategy in ("stratified", "random") else None,
         "train": ids[np.sort(train_idx)].tolist(),
         "val": ids[np.sort(val_idx)].tolist(),
         "test": ids[np.sort(test_idx)].tolist(),
@@ -138,6 +169,7 @@ def load_split(project: Project) -> dict[str, Any] | None:
 
 def split_summary(split: dict[str, Any]) -> dict[str, Any]:
     keep = [
+        "dedup",
         "strategy",
         "seed",
         "fractions",

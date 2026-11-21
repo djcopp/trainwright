@@ -47,9 +47,21 @@ def ensure_split(
                 "`trainwright split --force` and re-run baselines."
             )
         return existing, False
-    split = make_split(records, project.config)
+    split = make_split(records, project.config, *_dup_groups(project, records))
     save_split(project, split)
     return split, True
+
+
+def _dup_groups(project: Project, records: Records) -> tuple[Any, Any]:
+    cfg = project.config
+    if not cfg.split.dedup or cfg.data.group_column or cfg.data.time_column:
+        return None, None
+    from .data.dedup import duplicate_groups
+
+    groups, stats = duplicate_groups(
+        records, cfg.split.near_duplicate_threshold, project.state_dir / "cache"
+    )
+    return (groups if stats["items_with_duplicates"] else None), stats
 
 
 def require_split(project: Project, records: Records) -> dict[str, Any]:

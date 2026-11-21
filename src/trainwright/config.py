@@ -56,6 +56,16 @@ class SplitConfig(_Strict):
     val: float = Field(0.15, gt=0, lt=0.5)
     test: float = Field(0.15, gt=0, lt=0.5)
     seed: int = 42
+    dedup: bool = Field(
+        True,
+        description="Keep duplicates/near-duplicates (burst photos, repeated rows) in one split.",
+    )
+    near_duplicate_threshold: float = Field(
+        0.16,
+        ge=0,
+        le=0.5,
+        description="Images: max fraction of differing dHash bits to count as near-duplicates.",
+    )
 
 
 class CostConfig(_Strict):

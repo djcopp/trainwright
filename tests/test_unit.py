@@ -277,3 +277,21 @@ def test_register_custom_model():
     assert m(torch.randn(2, 3), torch.zeros(2, 0, dtype=torch.long)).shape == (2, 2)
     with pytest.raises(ValueError, match="Unknown params"):
         tw.build_model("tiny_test_model", {"n_num": 3, "n_outputs": 2}, {"nope": 1})
+
+
+def test_duplicate_aware_split_never_straddles():
+    from trainwright.data.dedup import duplicate_groups
+
+    rng = np.random.default_rng(0)
+    base = pd.DataFrame({"x": rng.normal(size=100), "z": rng.choice(["a", "b", None], 100)})
+    table = pd.concat([base] * 4, ignore_index=True)  # every row appears 4 times
+    y = np.array(["p" if v > 0 else "n" for v in table["x"]])
+    r = Records("tabular", "classification", [str(i) for i in range(400)], y, "fp", table=table)
+    groups, stats = duplicate_groups(r)
+    assert stats["n_groups"] == 100 and stats["share_with_duplicates"] == 1.0
+    s = make_split(r, _cfg(), groups, stats)
+    where = {i: k for k in ("train", "val", "test") for i in s[k]}
+    for g in set(groups):
+        members = [str(i) for i in np.flatnonzero(groups == g)]
+        assert len({where[m] for m in members}) == 1
+    assert s["counts"]["val"] > 0 and s["counts"]["test"] > 0
