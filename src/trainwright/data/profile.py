@@ -168,7 +168,57 @@ def _leakage_scan(
                         "why": "one feature alone explains the target almost perfectly",
                     }
                 )
+    if task == "regression" and not out:
+        out += _linear_leak(sub, ys.astype(float))
     return out
+
+
+def _linear_leak(sub: pd.DataFrame, y: np.ndarray) -> list[dict[str, Any]]:
+    """A target that is (almost) an exact linear combination of a few columns, e.g.
+    total = casual + registered. Either leakage (the parts are not known at prediction time) or a
+    deterministic relation that a linear term captures and trees/MLPs approximate badly."""
+    from sklearn.linear_model import LinearRegression
+
+    num = sub.select_dtypes("number")
+    num = num.loc[:, num.notna().mean() > 0.95]
+    if num.shape[1] == 0 or len(num) < 100:
+        return []
+    X = num.fillna(num.median()).to_numpy(float)
+    sd = X.std(0)
+    keep = sd > 0
+    X, cols = (X[:, keep] - X[:, keep].mean(0)) / sd[keep], list(num.columns[keep])
+    half = len(X) // 2
+    ss = float(((y[half:] - y[half:].mean()) ** 2).sum()) or 1.0
+
+    def r2(idx: list[int]) -> float:
+        m = LinearRegression().fit(X[:half][:, idx], y[:half])
+        return 1 - float(((y[half:] - m.predict(X[half:][:, idx])) ** 2).sum()) / ss
+
+    if r2(list(range(len(cols)))) < 0.995:
+        return []
+    # greedy forward selection: the smallest set of columns that reproduces the target
+    chosen: list[int] = []
+    best = -np.inf
+    while best < 0.995 and len(chosen) < min(6, len(cols)):
+        cand = [(r2(chosen + [j]), j) for j in range(len(cols)) if j not in chosen]
+        best, j = max(cand)
+        chosen.append(j)
+    if best < 0.995:
+        return []
+    for j in list(chosen):  # backward pass: drop columns the others make redundant
+        rest = [k for k in chosen if k != j]
+        if rest and r2(rest) >= 0.995:
+            chosen = rest
+    names = [cols[j] for j in chosen]
+    return [
+        {
+            "column": ", ".join(names),
+            "linear_r2": round(best, 4),
+            "why": f"the target is almost exactly a linear combination of {names}. If these are parts of "
+            "the target (e.g. sub-totals) or only known afterwards, this is leakage: drop them. If they "
+            "are genuinely available at prediction time, keep them; the linear baseline will be hard to beat.",
+        }
+    ]
 
 
 _KEY_HINT = {
