@@ -95,14 +95,18 @@ def _playbook() -> str:
     return resources.files("trainwright").joinpath("templates/PLAYBOOK.md").read_text()
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def _main(
+    ctx: typer.Context,
     json_out: bool = typer.Option(False, "--json", help="Machine-readable JSON output."),
     version: bool = typer.Option(False, "--version", help="Print version and exit."),
 ) -> None:
     STATE["json"] = json_out
     if version:
         print(__version__)
+        raise typer.Exit()
+    if ctx.invoked_subcommand is None:
+        print(ctx.get_help())
         raise typer.Exit()
 
 
@@ -1139,11 +1143,6 @@ def mcp() -> None:
 
 def main() -> None:
     import click
-    from pydantic import ValidationError
-
-    from .config import ConfigError
-    from .pipeline import LifecycleError
-    from .project import ProjectNotFound
 
     try:
         rv = app(standalone_mode=False)
@@ -1153,11 +1152,26 @@ def main() -> None:
         raise e
     except typer.Exit as e:
         sys.exit(e.exit_code)
-    except click.exceptions.Abort:
+    except (click.exceptions.Abort, KeyboardInterrupt):
+        print("interrupted", file=sys.stderr)
         sys.exit(130)
-    except click.ClickException as e:
-        e.show()
-        sys.exit(e.exit_code)
+    except Exception as e:
+        # click/typer usage errors (typer may vendor its own click, so duck-type them)
+        if hasattr(e, "show") and hasattr(e, "exit_code"):
+            e.show()
+            sys.exit(e.exit_code)
+        _handle_error(e)
+
+
+def _handle_error(e: Exception) -> None:
+    from pydantic import ValidationError
+
+    from .config import ConfigError
+    from .pipeline import LifecycleError
+    from .project import ProjectNotFound
+
+    try:
+        raise e
     except (
         CLIError,
         ConfigError,
@@ -1187,9 +1201,6 @@ def main() -> None:
             if hint:
                 print(f"hint: {hint}", file=sys.stderr)
         sys.exit(1)
-    except KeyboardInterrupt:
-        print("interrupted", file=sys.stderr)
-        sys.exit(130)
     except Exception as e:
         if STATE["json"]:
             print(
