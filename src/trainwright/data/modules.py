@@ -180,10 +180,16 @@ class ProjectDataModule(DataModule):
                 self.pre = text_preprocessor_from_state(state["features"])
             elif self.exp.model.name == "text_pretrained":
                 params = self.exp.model.params
-                self.pre = HFTokenizer(
-                    params.get("encoder", "BAAI/bge-small-en-v1.5"),
-                    int(params.get("max_length", 128)),
-                ).fit([])
+                encoder = params.get("encoder", "BAAI/bge-small-en-v1.5")
+                max_len = int(params.get("max_length", 0) or 0)
+                if max_len <= 0:  # auto: fit the data, don't pad short messages to 128+
+                    probe = HFTokenizer(encoder, 512).fit([])
+                    sample = (train.texts or [])[:5000]
+                    lens = probe.token_lengths(sample) if sample else [128]
+                    p99 = float(np.percentile(lens, 99))
+                    max_len = int(min(512, max(32, 16 * math.ceil(p99 * 1.1 / 16))))
+                    self.log(f"text max_length auto-set to {max_len} tokens (p99 of train = {p99:.0f})")
+                self.pre = HFTokenizer(encoder, max_len).fit([])
             else:
                 self.pre = TextTokenizer(
                     pp.max_vocab, pp.ngrams, pp.max_tokens, pp.lowercase, pp.min_token_freq

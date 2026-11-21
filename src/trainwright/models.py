@@ -486,7 +486,7 @@ class TextPretrained(nn.Module):
         spec: dict[str, Any],
         encoder: str = "BAAI/bge-small-en-v1.5",
         dropout: float = 0.1,
-        max_length: int = 128,
+        max_length: int = 0,
         pretrained: bool = True,
     ):
         super().__init__()

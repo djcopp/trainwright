@@ -411,6 +411,16 @@ class HFTokenizer:
     def vocab_size(self) -> int:
         return int(self._load().get_vocab_size())
 
+    def token_lengths(self, texts: list[str]) -> list[int]:
+        """Untruncated token counts (used to size max_tokens to the data)."""
+        from tokenizers import Tokenizer
+
+        self._load()
+        raw = Tokenizer.from_str(self.tokenizer_json or "")
+        raw.no_padding()
+        raw.no_truncation()
+        return [len(e.ids) for e in raw.encode_batch([str(t) for t in texts])]
+
     def encode(self, texts: list[str]) -> np.ndarray:
         enc = self._load().encode_batch([t if isinstance(t, str) else str(t) for t in texts])
         return np.asarray([e.ids for e in enc], dtype=np.int64)
