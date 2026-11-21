@@ -37,7 +37,8 @@ trainwright baseline                    # floor to beat (dummy, linear, gradient
 trainwright train --hypothesis "default recipe"
 trainwright diagnose latest             # findings + ready-to-run next experiments
 #   -> iterate: features.py, model changes, regularisation ... one hypothesis per run
-trainwright tune --budget 15m           # optional: automated recipe search around the best run
+trainwright tune --budget 10m           # automated recipe search around the best run
+trainwright ensemble --seeds 3          # seed replicas + greedy-weighted ensemble of the top runs
 trainwright runs                        # validation leaderboard (±SE, ≈ = tied with #1)
 trainwright evaluate best               # val error analysis: confusions, worst examples, image grid
 trainwright evaluate best --split test --reason "final model"   # ONCE
@@ -50,6 +51,24 @@ trainwright report                      # reports/REPORT.md for the human
 
 Add `--json` to any command for machine-readable output. Every command prints `next:`
 suggestions. Follow them unless you have a reason not to.
+
+## Use the whole time budget
+
+A first pass (profile → split → baseline → default model) takes minutes. Don't stop there:
+the goal is the **best model you can ship in the time you have**, and a straight prompt to an
+agent without trainwright keeps iterating. After the first pass, work through this list,
+running one hypothesis per experiment, until about 10 minutes remain:
+
+1. Fix the data and the deployment scenario (leaks, group keys, `features.py`).
+2. Try the other strong model family for the modality (see below), e.g. `image_probe` vs a
+   fine-tuned backbone, `text_pretrained` with another encoder, MLP vs gradient boosting.
+3. `trainwright tune --budget 10m` around the best recipe.
+4. `trainwright ensemble --seeds 3`: seed replicas of the best neural run plus a greedy-weighted
+   ensemble with the other top runs. Single runs are partly luck: the seed spread it prints is
+   often bigger than the ± on the leaderboard. A seed average is the robust choice, and it competes
+   on the leaderboard like any run.
+5. Then pick the leader on val (ties → simpler/cheaper), evaluate test once, `finalize`, export
+   and predict.
 
 ## Decide the deployment scenario first
 
