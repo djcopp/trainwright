@@ -188,7 +188,9 @@ class ProjectDataModule(DataModule):
                     lens = probe.token_lengths(sample) if sample else [128]
                     p99 = float(np.percentile(lens, 99))
                     max_len = int(min(512, max(32, 16 * math.ceil(p99 * 1.1 / 16))))
-                    self.log(f"text max_length auto-set to {max_len} tokens (p99 of train = {p99:.0f})")
+                    self.log(
+                        f"text max_length auto-set to {max_len} tokens (p99 of train = {p99:.0f})"
+                    )
                 self.pre = HFTokenizer(encoder, max_len).fit([])
             else:
                 self.pre = TextTokenizer(
