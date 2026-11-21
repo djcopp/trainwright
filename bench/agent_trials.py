@@ -181,7 +181,7 @@ def run_trial(
     env = dict(os.environ)
     env.pop("VIRTUAL_ENV", None)
     if condition == "trainwright":
-        bin_dir = ROOT / ".venv" / "bin"
+        bin_dir = Path(os.environ.get("TW_TRIAL_BIN", str(ROOT / "scratch" / "tw-env" / "bin")))
         subprocess.run(
             [str(bin_dir / "trainwright"), "agent-setup", "--project"],
             cwd=tdir,
