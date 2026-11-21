@@ -41,6 +41,10 @@ What the loop taught us, and what is now built in:
 - **Ship the strongest model, not your favourite.** When an MLP only ties gradient boosting,
   trainwright says so (bootstrap standard errors everywhere). The agent then ships the simpler model, and `finalize`
   refits it on train+val.
+- **Single runs are partly luck, for models and for agents.** Three seeds of one MLP recipe ranged
+  0.797–0.853 val accuracy (bootstrap SE 0.009), and two identical straight prompts scored 0.908 and
+  0.696. `trainwright ensemble --seeds 3` averages seeds and combines runs with greedy weights, and
+  the harness runs every condition twice.
 - **Give agents modern defaults.** Pretrained text encoders (MiniLM, bge) and frozen DINOv2 features
   were the control agents' best tools, so both are now one override away.
 
@@ -121,6 +125,7 @@ trainwright train --hypothesis "default recipe"
 trainwright diagnose latest                           # findings + ready-to-run next experiments
 trainwright train --from-run 004 -o model.params.dropout=0.3 --hypothesis "regularise the gap seen in 004"
 trainwright tune --budget 20m                         # successive-halving recipe search
+trainwright ensemble --seeds 3                        # seed replicas + greedy-weighted ensemble
 trainwright runs                                      # leaderboard with ±standard errors, ≈ marks ties
 trainwright evaluate best --split test --reason "final model"
 trainwright finalize best                             # retrain the chosen recipe on train+val
@@ -159,6 +164,7 @@ shipped (source plus fitted state) inside the exported bundle.
 | **Training** | One `Trainer`: AMP, gradient clipping and accumulation, cosine/one-cycle with warm-up, discriminative LR for pretrained backbones, early stopping, wall-clock budgets, non-finite-loss detection, best checkpointing, on-device image augmentation, cached image decoding. |
 | **Tracking** | Plain files, no server: `runs/<id>/{meta.json, config.yaml, metrics.jsonl, summary.json, diagnosis.json, curves.png, checkpoints/}` with hypothesis, parent run, git SHA, environment, data fingerprint, split hash, `features.py` hash and label-correction hash. |
 | **Diagnosis** | Overfitting vs over-confidence, generalisation gap, non-convergence, instability, early peaks, divergence, collapse, weak minority classes, calibration, baseline wins and ties, all **noise-aware** (bootstrap standard errors). Each finding comes with concrete overrides and ready-to-run commands. |
+| **Ensembles** | `ensemble` picks members from the top runs by greedy forward selection on val log-loss (Caruana et al.), adds seed replicas on request and reports the seed spread. Ensembles evaluate, finalize and export like any run (a bundle of bundles averaged by the runtime). |
 | **Evaluation** | Per-class report, confusions, worst examples (an image grid for vision), and accuracy vs coverage for routing low-confidence cases to an LLM. Confidences are temperature-calibrated on val. The test split is sealed: every access is logged and reuse is flagged. |
 | **Deployment** | `finalize` (refit on train+val), ONNX export with a parity check, a torch-free runtime (numpy + onnxruntime), a generated FastAPI server, Dockerfile and model card. `benchmark` measures latency and throughput and estimates $/1M predictions against the LLM call it replaces, with every assumption printed. |
 | **Distillation** | `label` labels data with Claude under a hard spend cap. `review` ranks likely label errors and can ask a stronger model to adjudicate them blind. `data.corrections` applies fixes without breaking the split. |
