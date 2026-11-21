@@ -41,7 +41,7 @@ trainwright tune --budget 15m           # optional: automated recipe search arou
 trainwright runs                        # validation leaderboard (±SE, ≈ = tied with #1)
 trainwright evaluate best               # val error analysis: confusions, worst examples, image grid
 trainwright evaluate best --split test --reason "final model"   # ONCE
-trainwright finalize best               # retrain the chosen recipe on train+val = production model
+trainwright finalize best               # production model: chosen recipe on train+val(+test once evaluated)
 trainwright export <final-run>          # ONNX bundle + FastAPI server + Dockerfile + model card
 trainwright benchmark <final-run>       # latency, throughput, $/1M predictions vs the LLM
 trainwright predict <run> -i new.csv --out predictions.csv
@@ -104,9 +104,9 @@ residual MLP, AdamW + cosine, early stopping.
 
 **Image** (`image_pretrained`, resnet18 at 224px): fine-tunes an ImageNet backbone with a 10x lower backbone LR.
 1. Look at `.trainwright/samples.png` first. If left/right matters: `preprocess.hflip=false`.
-2. Small dataset (a few thousand images or fewer): try a linear probe on self-supervised features first,
-   `-o model.params.backbone=dinov2_small -o model.params.freeze_backbone=true` (fast, often excellent),
-   then fine-tune (`freeze_backbone=false`) if it plateaus.
+2. Small dataset (a few thousand images or fewer): compare a linear probe on self-supervised features,
+   `-o model.name=image_probe` (frozen DINOv2 + linear head; fast), with the fine-tuned default. Keep
+   whichever is better on val; with a small val set run both before concluding anything.
 3. Fast iteration: `preprocess.image_size=160` and/or `model.params.backbone=mobilenet_v3_large`.
 4. Overfitting → `preprocess.augment=medium|strong`, `train.label_smoothing=0.1`, `train.freeze_backbone_epochs=2`.
 5. Accuracy ceiling → `backbone=efficientnet_b0|convnext_tiny`, `optim.backbone_lr_mult=0.3`, more epochs.

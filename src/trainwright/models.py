@@ -511,3 +511,26 @@ class TextPretrained(nn.Module):
         m = mask.unsqueeze(-1).to(h.dtype)
         pooled = (h * m).sum(1) / m.sum(1).clamp(min=1.0)
         return self.head(pooled)
+
+
+@register_model(
+    "image_probe",
+    modality="image",
+    description="Linear probe: frozen self-supervised backbone (DINOv2-small by default) + linear head. "
+    "Only the head trains, so runs take seconds per epoch.",
+    when_to_use="First model to try on small image datasets (up to a few thousand images); fine-tune with "
+    "image_pretrained afterwards if it plateaus.",
+    recipe={
+        "optim.lr": 1e-2,
+        "optim.weight_decay": 1e-4,
+        "train.label_smoothing": 0.0,
+        "train.max_epochs": 30,
+        "train.patience": 10,
+        "preprocess.augment": "light",
+    },
+)
+class ImageProbe(ImagePretrained):
+    def __init__(self, spec: dict[str, Any], backbone: str = "dinov2_small", dropout: float = 0.0):
+        super().__init__(
+            spec, backbone=backbone, pretrained=True, dropout=dropout, freeze_backbone=True
+        )

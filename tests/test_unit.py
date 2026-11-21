@@ -373,7 +373,7 @@ def test_every_registered_model_builds_and_runs():
     }
     offline = {"image_pretrained": {"pretrained": False}}
     for info in tw.list_models():
-        if info["name"] in ("text_pretrained", "tiny_test_model"):
+        if info["name"] in ("text_pretrained", "tiny_test_model", "image_probe"):
             continue  # needs a hub download / registered by another test
         spec, batch = specs[info["modality"]]
         m = tw.build_model(info["name"], spec, offline.get(info["name"], {})).eval()
