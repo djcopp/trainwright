@@ -398,9 +398,108 @@ def summary_table(tasks: Path, trial_dirs: list[Path], tw_tags: list[str]) -> st
     return "\n".join(out)
 
 
+GENERIC_PROMPT = {
+    "classification": "I have this data in {file} with labels in the `{target}` column. Do feature exploration, "
+    "train a model to predict it and tell me how good it is. Finally write predictions for holdout.csv (same "
+    "columns, no label) to predictions.csv with one row per holdout row, in the same order, in a column named "
+    "`prediction`.",
+    "regression": "I have this data in {file}; the target is the `{target}` column. Explore it, train a model that "
+    "predicts the target and tell me how accurate it is. Finally write predictions for holdout.csv (same columns, no "
+    "target) to predictions.csv: one row per holdout row, same order, column `prediction`.",
+}
+
+
+def prepare_suite(suite_data: Path, out: Path, hidden_frac: float = 0.15, seed: int = 0) -> int:
+    """Turn bench/suite.py datasets into agent tasks with a hidden 15% holdout and a generic prompt."""
+    n = 0
+    for d in sorted(suite_data.iterdir()):
+        if not (d / "data.csv").exists():
+            continue
+        meta = json.loads((d / "meta.json").read_text())
+        tdir = out / d.name
+        if (tdir / "task.json").exists():
+            n += 1
+            continue
+        (tdir / "data").mkdir(parents=True, exist_ok=True)
+        df = pd.read_csv(d / "data.csv").sample(frac=1.0, random_state=seed).reset_index(drop=True)
+        target = meta["target"]
+        if meta["task"] == "classification":
+            hidden_idx = (
+                df.groupby(target, group_keys=False)
+                .apply(lambda g: g.sample(frac=hidden_frac, random_state=seed))
+                .index
+            )
+        else:
+            hidden_idx = df.sample(frac=hidden_frac, random_state=seed).index
+        hidden, visible = (
+            df.loc[hidden_idx].reset_index(drop=True),
+            df.drop(index=hidden_idx).reset_index(drop=True),
+        )
+        visible.to_csv(tdir / "data" / "data.csv", index=False)
+        hidden.drop(columns=[target]).to_csv(tdir / "data" / "holdout.csv", index=False)
+        hidden[[target]].rename(columns={target: "label"}).to_csv(
+            tdir / "hidden_labels.csv", index=False
+        )
+        spec = {
+            "name": d.name,
+            "kind": "tabular",
+            "task": meta["task"],
+            "target": target,
+            "file": "data.csv",
+            "prompt": GENERIC_PROMPT[meta["task"]].format(file="data.csv", target=target),
+        }
+        (tdir / "task.json").write_text(json.dumps(spec, indent=2))
+        n += 1
+    return n
+
+
+def batch(
+    tasks: Path,
+    trials: Path,
+    conditions: list[str],
+    reps: int,
+    parallel: int,
+    max_trials: int,
+    model: str,
+    timeout_min: float,
+) -> None:
+    """Resumable: runs every (task, condition, rep) without a .meta.json, at most max_trials this call."""
+    jobs = []
+    for tdir in sorted(tasks.iterdir()):
+        if not (tdir / "task.json").exists():
+            continue
+        for rep in range(1, reps + 1):
+            for cond in conditions:
+                tag = f"b{rep}"
+                if not (trials / f"{tdir.name}-{cond}-{tag}.meta.json").exists():
+                    jobs.append((tdir.name, cond, tag))
+    jobs = jobs[:max_trials]
+    print(f"{len(jobs)} trials to run ({parallel} at a time)", flush=True)
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(parallel) as ex:
+        list(ex.map(lambda j: run_trial(tasks, trials, j[0], j[1], model, timeout_min, j[2]), jobs))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
+    ps = sub.add_parser("prepare-suite", help="agent tasks from bench/suite.py datasets")
+    ps.add_argument("--suite-data", type=Path, default=ROOT / "scratch" / "suite" / "data")
+    ps.add_argument("--out", type=Path, default=ROOT / "scratch" / "suite-tasks")
+    b = sub.add_parser("batch", help="resumable, capped batch of agent trials")
+    b.add_argument("--tasks", type=Path, default=ROOT / "scratch" / "suite-tasks")
+    b.add_argument(
+        "--trials", type=Path, default=Path.home() / ".cache" / "trainwright-suite-trials"
+    )
+    b.add_argument("--conditions", nargs="+", default=["control", "trainwright"])
+    b.add_argument("--reps", type=int, default=1)
+    b.add_argument("--parallel", type=int, default=4)
+    b.add_argument(
+        "--max-trials", type=int, default=20, help="hard cap per invocation (usage control)"
+    )
+    b.add_argument("--model", default="sonnet")
+    b.add_argument("--timeout-min", type=float, default=30)
     p = sub.add_parser("prepare")
     p.add_argument("--datasets", type=Path, default=ROOT / "scratch" / "datasets")
     p.add_argument("--out", type=Path, default=ROOT / "scratch" / "tasks")
@@ -426,7 +525,21 @@ def main() -> None:
     s.add_argument("--tasks", type=Path, default=ROOT / "scratch" / "tasks")
     s.add_argument("--trials", type=Path, default=Path.home() / ".cache" / "trainwright-trials")
     a = ap.parse_args()
-    if a.cmd == "prepare":
+    if a.cmd == "prepare-suite":
+        print(f"{prepare_suite(a.suite_data, a.out)} agent tasks ready in {a.out}")
+    elif a.cmd == "batch":
+        a.trials.mkdir(parents=True, exist_ok=True)
+        batch(
+            a.tasks,
+            a.trials,
+            a.conditions,
+            a.reps,
+            a.parallel,
+            a.max_trials,
+            a.model,
+            a.timeout_min,
+        )
+    elif a.cmd == "prepare":
         prepare(a.datasets, a.out)
     elif a.cmd == "run":
         a.trials.mkdir(parents=True, exist_ok=True)
