@@ -165,7 +165,7 @@ def export_run(
         "git": meta.get("git"),
         "hypothesis": meta.get("hypothesis"),
     }
-    if meta.get("kind") == "baseline":
+    if meta.get("kind") == "baseline" or (run.dir / "model.joblib").exists():
         if cfg.modality == "image":
             raise LifecycleError(
                 "Image baselines are reference points only and cannot be exported."

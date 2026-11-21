@@ -386,8 +386,13 @@ def finalize(
     """
     import yaml
 
+    if run.meta.get("kind") == "baseline":
+        from .baselines import refit_baseline
+
+        parts = ["train", "val"] + (["test"] if include_test else [])
+        return refit_baseline(project, run, parts, progress)
     if run.meta.get("kind") != "neural":
-        raise LifecycleError("finalize needs a completed neural run.")
+        raise LifecycleError("finalize needs a completed neural or baseline run.")
     records = get_records(project)
     split = require_split(project, records)
     exp = ExperimentConfig.model_validate(yaml.safe_load(run.config_path.read_text()))

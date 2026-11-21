@@ -259,3 +259,20 @@ def test_finalize_trains_on_train_plus_val(tabular_project):
     bad = tw("evaluate", fid, "--split", "val", ok=False)
     assert bad.get("ok") is False or bad.get("exception") is not None
     assert tw("export", fid)["result"]["parity_ok"]
+
+
+def test_finalize_a_baseline_and_ship_it(regression_project):
+    tw = regression_project
+    tw("init", "--data", "houses.csv", "--target", "price")
+    tw("split")
+    tw("baseline", "--only", "hist_gbm")
+    gbm = tw("runs")["result"][0]["id"]
+    tw("evaluate", gbm, "--split", "test", "--reason", "baseline is the final model")
+    fid = tw("finalize", gbm)["result"]["run"]
+    meta = json.loads((tw.root / "runs" / fid / "meta.json").read_text())
+    assert meta["kind"] == "final" and meta["model"] == "baseline:hist_gbm"
+    assert tw("evaluate", fid, "--split", "test")["result"]["metrics"]["rmse"] > 0
+    exp = tw("export", fid)["result"]
+    from trainwright.runtime import Predictor
+
+    assert Predictor(exp["dir"]).predict([{"x1": 0.0, "x2": 0.0, "x3": 0.0}])[0]["prediction"] > 0

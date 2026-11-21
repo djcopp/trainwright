@@ -96,8 +96,11 @@ def evaluate(
                 "Choosing between models by test score is selection on test: the reported test number is "
                 "optimistic. Select on val; report test once for the final model."
             )
+        from .leaderboard import leaderboard
+
         best = best_run(project)
-        if best and best["id"] != run.id:
+        tied = {r["id"] for r in leaderboard(project) if r.get("tied_with_leader")}
+        if best and best["id"] != run.id and run.id not in tied:
             warnings.append(
                 f"{run.id} is not the best run on val ({best['id']} is). If this is your final model, "
                 "say why in --reason."
@@ -110,7 +113,7 @@ def evaluate(
             f"run {run.meta.get('parent')}'s held-out numbers."
         )
     paths = np.array([])
-    if kind == "baseline":
+    if kind == "baseline" or (run.dir / "model.joblib").exists():
         outputs, y, ids, paths = _baseline_outputs(project, run, split)
         loss = None
     else:
@@ -137,7 +140,7 @@ def evaluate(
     if cfg.task == "classification":
         sp = (
             require_split(project, get_records(project))
-            if kind == "baseline"
+            if kind == "baseline" or (run.dir / "model.joblib").exists()
             else {"classes": res["dm"].classes}
         )
         classes: list[str] = sp["classes"]

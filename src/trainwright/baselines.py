@@ -30,7 +30,7 @@ BASELINES = {
 DESCRIPTIONS = {
     "dummy": "predicts class priors / the training mean: the absolute floor",
     "linear": "logistic/ridge regression on standardised numerics + one-hot categoricals",
-    "hist_gbm": "scikit-learn HistGradientBoosting with native categorical support (strong for tables)",
+    "hist_gbm": "scikit-learn HistGradientBoosting (<=1000 rounds, early stopping, native categoricals): strong for tables",
     "tfidf_linear": "TF-IDF word 1-2 grams + logistic/ridge regression (strong for text)",
     "pixels_linear": "logistic/ridge regression on 16x16 downsampled pixels",
 }
@@ -101,8 +101,13 @@ def _make_tabular(name: str, task: str, pre: TabularPreprocessor, seed: int) -> 
             ]
         )
         cat_mask = [False] * len(num) + [True] * len(cat)
+        # strong enough to ship: up to 1000 boosting rounds, early-stopped on an internal split
         kw = dict(
-            categorical_features=cat_mask if cat else None, random_state=seed, early_stopping=True
+            categorical_features=cat_mask if cat else None,
+            random_state=seed,
+            early_stopping=True,
+            max_iter=1000,
+            n_iter_no_change=30,
         )
         est = (
             HistGradientBoostingClassifier(**kw)
@@ -287,3 +292,75 @@ def run_baselines(
             )
         runs.append(run)
     return runs
+
+
+def refit_baseline(
+    project: Project, run: Run, parts: list[str], progress: Callable[[str], None] | None = print
+) -> Run:
+    """Refit a baseline's exact sklearn pipeline on several splits (used by `finalize`)."""
+    import joblib
+    from sklearn.base import clone
+
+    cfg = project.config
+    if cfg.modality == "image":
+        raise ValueError("image baselines are reference points only and cannot be finalized")
+    blob = joblib.load(run.dir / "model.joblib")
+    records = get_records(project)
+    split = require_split(project, records)
+    ids = sorted({i for p in parts for i in split[p]})
+    recs = records.subset(ids)
+    classes = split.get("classes")
+    y = LabelEncoder(classes).encode(recs.y.tolist()) if classes else recs.y.astype(float)
+    hook = None
+    name = run.meta.get("model", "").split(":")[-1]
+    if name == "dummy":
+        X: Any = np.zeros((len(y), 1))
+    elif cfg.modality == "tabular":
+        from .featurehook import FeatureHook
+
+        num, cat = blob["columns"]
+        if blob.get("feature_hook"):
+            hook = FeatureHook(blob["feature_hook"]["source"])
+            assert recs.table is not None
+            hook.fit(recs.table)
+        X = _to_str_cats(_tabular_frame(recs, num + cat, hook), cat)
+    else:
+        X = recs.texts
+    model = clone(blob["model"]).fit(X, y)
+    final = Run.create(
+        project.runs_dir,
+        f"final-{run.id}",
+        kind="final",
+        parent=run.id,
+        tags=["final"],
+        hypothesis=f"production model: {run.id} refit on {'+'.join(parts)}",
+        project_root=project.root,
+        extra_meta={
+            "model": run.meta.get("model"),
+            "split_hash": split["split_hash"],
+            "data_fingerprint": records.fingerprint,
+            "trained_on": parts,
+            "includes_test": "test" in parts,
+        },
+    )
+    joblib.dump(
+        {
+            **blob,
+            "model": model,
+            "feature_hook": hook.state_dict() if hook else blob.get("feature_hook"),
+        },
+        final.dir / "model.joblib",
+    )
+    final.write_summary(
+        {
+            "kind": "final",
+            "model": run.meta.get("model"),
+            "parent": run.id,
+            "n_train": len(y),
+            "note": f"trained on {'+'.join(parts)}; quote {run.id}'s held-out numbers",
+        }
+    )
+    final.set_status("completed")
+    if progress:
+        progress(f"refit {run.id} ({run.meta.get('model')}) on {len(y)} rows -> {final.id}")
+    return final
