@@ -179,6 +179,7 @@ def train(
             monitor=monitor,
             mode=mode,
             patience=exp.train.patience,
+            min_steps=exp.train.min_steps,
             time_budget_s=parse_duration(exp.train.time_budget),
             callbacks=callbacks,
             run=run,
@@ -231,7 +232,7 @@ def train(
             "metric_mode": mode,
             "best_epoch": result.best_epoch,
             "epochs_run": result.epochs_run,
-            "max_epochs": exp.train.max_epochs,
+            "max_epochs": trainer.max_epochs,
             "stop_reason": result.stop_reason,
             "train_time_s": result.train_time_s,
             "val": {k[4:]: v for k, v in best.items() if k.startswith("val_")},
@@ -402,7 +403,12 @@ def finalize(
     exp = exp.model_copy(
         update={
             "train": exp.train.model_copy(
-                update={"max_epochs": max(1, epochs), "patience": None, "time_budget": None}
+                update={
+                    "max_epochs": max(1, epochs),
+                    "patience": None,
+                    "time_budget": None,
+                    "min_steps": 0,
+                }
             )
         }
     )

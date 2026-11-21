@@ -86,6 +86,7 @@ class Trainer:
         monitor: str = "val_loss",
         mode: str = "min",
         patience: int | None = None,
+        min_steps: int = 0,
         time_budget_s: float | None = None,
         callbacks: list[Callback] | None = None,
         run: Run | None = None,
@@ -97,6 +98,7 @@ class Trainer:
         save_last: bool = False,
     ):
         self.max_epochs = max_epochs
+        self.min_steps = min_steps
         self.device = resolve_device(device)
         self.precision = precision
         self.grad_clip = grad_clip
@@ -182,6 +184,17 @@ class Trainer:
         assert train_loader is not None and val_loader is not None
         task.to(self.device)
         steps_per_epoch = max(1, math.ceil(len(train_loader) / self.accumulate))  # type: ignore[arg-type]
+        if self.min_steps and steps_per_epoch * self.max_epochs < self.min_steps:
+            new_max = math.ceil(self.min_steps / steps_per_epoch)
+            factor = new_max / self.max_epochs
+            for cb in self.callbacks:
+                if isinstance(cb, EarlyStopping):
+                    cb.patience = math.ceil(cb.patience * factor)
+            self.say(
+                f"small dataset ({steps_per_epoch} steps/epoch): max_epochs {self.max_epochs} -> {new_max} "
+                f"so training gets >= {self.min_steps} steps (train.min_steps); patience scaled x{factor:.1f}"
+            )
+            self.max_epochs = new_max
         optimizer, scheduler, interval = task.configure_optimizers(steps_per_epoch, self.max_epochs)
         amp_ctx, scaler = self._autocast(task)
         t0 = time.time()
