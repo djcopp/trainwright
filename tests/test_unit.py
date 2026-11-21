@@ -379,3 +379,22 @@ def test_every_registered_model_builds_and_runs():
         m = tw.build_model(info["name"], spec, offline.get(info["name"], {})).eval()
         with torch.no_grad():
             assert m(**batch).shape == (2, 2), info["name"]
+
+
+def test_mcp_server_exposes_lifecycle_tools():
+    import asyncio
+
+    pytest.importorskip("mcp")
+    from trainwright.mcp_server import build_server
+
+    names = {t.name for t in asyncio.run(build_server().list_tools())}
+    assert {
+        "status",
+        "profile",
+        "split",
+        "baseline",
+        "train",
+        "diagnose",
+        "evaluate",
+        "export",
+    } <= names

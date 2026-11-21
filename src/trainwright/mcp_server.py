@@ -32,9 +32,12 @@ def _run(args: list[str], cwd: str | None = None, timeout: float | None = None) 
 
 
 def build_server() -> Any:
-    from mcp.server.fastmcp import FastMCP  # type: ignore[attr-defined]
+    try:  # mcp >= 2
+        from mcp.server.mcpserver import MCPServer as Server
+    except ImportError:  # mcp 1.x
+        from mcp.server.fastmcp import FastMCP as Server  # type: ignore[no-redef]
 
-    srv = FastMCP("trainwright")
+    srv = Server("trainwright")
 
     @srv.tool()
     def status(project_dir: str) -> dict[str, Any]:
