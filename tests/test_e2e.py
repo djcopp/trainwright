@@ -622,3 +622,11 @@ def test_tuned_gbm_baseline_finalizes(regression_project):
     assert tuned["val_rmse"] > 0
     fin = tw("finalize", tuned["id"])["result"]
     assert fin["run"]
+
+
+def test_tuned_tfidf_baseline(text_project):
+    tw = text_project
+    tw("init", "--data", "tickets.csv", "--target", "intent", "--text-column", "message")
+    tw("split")
+    res = tw("baseline", "--only", "tfidf_linear,tfidf_tuned")["result"]["leaderboard"]
+    assert any(r["model"] == "baseline:tfidf_tuned" for r in res)

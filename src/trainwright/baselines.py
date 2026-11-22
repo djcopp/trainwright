@@ -33,6 +33,7 @@ DESCRIPTIONS = {
     "hist_gbm": "scikit-learn HistGradientBoosting (<=1000 rounds, early stopping, native categoricals): strong for tables",
     "gbm_tuned": "HistGradientBoosting tuned on val over 12 configurations, best one averaged over 3 seeds",
     "tfidf_linear": "TF-IDF word 1-2 grams + logistic/ridge regression (strong for text)",
+    "tfidf_tuned": "TF-IDF (words, or words + characters 2-5) + logistic/ridge, regularisation tuned on val",
     "pixels_linear": "logistic/ridge regression on 16x16 downsampled pixels",
 }
 
@@ -181,6 +182,66 @@ def _tune_gbm(
     return make_pipeline(clone(ct), vote)
 
 
+def _tfidf_pipeline(task: str, chars: bool, strength: float) -> Any:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression, Ridge
+    from sklearn.pipeline import FeatureUnion, make_pipeline
+
+    words = TfidfVectorizer(ngram_range=(1, 2), min_df=2, max_features=200_000, sublinear_tf=True)
+    vec: Any = words
+    if chars:
+        vec = FeatureUnion(
+            [
+                ("w", words),
+                (
+                    "c",
+                    TfidfVectorizer(
+                        analyzer="char_wb",
+                        ngram_range=(2, 5),
+                        min_df=2,
+                        max_features=300_000,
+                        sublinear_tf=True,
+                    ),
+                ),
+            ]
+        )
+    est = (
+        LogisticRegression(max_iter=3000, C=strength)
+        if task == "classification"
+        else Ridge(alpha=strength)
+    )
+    return make_pipeline(vec, est)
+
+
+def _tune_tfidf(
+    task: str,
+    Xtr: Any,
+    ytr: Any,
+    Xva: Any,
+    yva: Any,
+    metric: str,
+    k: int,
+    progress: Callable[[str], None] | None,
+) -> Any:
+    """Pick words vs words+characters and the regularisation strength on val."""
+    from .metrics import _single_metric, metric_mode
+
+    sign = 1.0 if metric_mode(metric) == "max" else -1.0
+    grid = [1.0, 4.0, 16.0] if task == "classification" else [0.3, 1.0, 3.0]
+    best: tuple[bool, float] = (False, grid[1])
+    best_score = -np.inf
+    for chars in (False, True):
+        for strength in grid:
+            m = _tfidf_pipeline(task, chars, strength).fit(Xtr, ytr)
+            out = _proba_full(m, Xva, k) if task == "classification" else m.predict(Xva)
+            sc = sign * _single_metric(task, metric, np.asarray(yva), out, k)
+            if sc > best_score:
+                best, best_score = (chars, strength), sc
+    if progress:
+        progress(f"tfidf_tuned: {'words + characters' if best[0] else 'words'}, strength {best[1]}")
+    return _tfidf_pipeline(task, *best)
+
+
 def _to_str_cats(df: Any, cat: list[str]) -> Any:
     df = df.copy()
     for c in cat:
@@ -227,7 +288,13 @@ def run_baselines(
     records = get_records(project)
     split = require_split(project, records)
     names = which or BASELINES[cfg.modality]
-    extra = ["gbm_tuned"] if cfg.modality == "tabular" else []
+    extra = (
+        ["gbm_tuned"]
+        if cfg.modality == "tabular"
+        else ["tfidf_tuned"]
+        if cfg.modality == "text"
+        else []
+    )
     unknown = [n for n in names if n not in BASELINES[cfg.modality] + extra]
     if unknown:
         raise ValueError(
@@ -291,6 +358,17 @@ def run_baselines(
             )
         elif cfg.modality == "tabular":
             model = _make_tabular(name, task, pre, cfg.split.seed)
+        elif name == "tfidf_tuned":
+            model = _tune_tfidf(
+                task,
+                feats["train"],
+                y_tr,
+                feats["val"],
+                y_va,
+                cfg.metric,
+                len(classes or []),
+                progress,
+            )
         elif name == "tfidf_linear":
             vec = TfidfVectorizer(
                 ngram_range=(1, 2), min_df=2, max_features=200_000, sublinear_tf=True
