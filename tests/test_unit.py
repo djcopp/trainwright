@@ -418,3 +418,40 @@ def test_greedy_ensemble_weights_drop_useless_members():
     assert (
         w[0] > 0 and w[1] > 0 and w[2] == 0
     )  # two independent good models combine; junk is ignored
+
+
+def test_precision_choice_per_device(monkeypatch):
+    import torch
+
+    from trainwright.trainer import Trainer
+
+    big = torch.nn.Linear(4000, 2000)  # 8M params
+
+    class T(torch.nn.Module):
+        def __init__(self, m):
+            super().__init__()
+            self.m = m
+
+    t = Trainer(device="cpu", progress=None)
+    assert t._autocast(T(big))[1] is None  # cpu: fp32, no scaler
+    t.device = "cuda"
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
+    ctx, scaler = t._autocast(T(big))
+    assert scaler is not None and ctx.fast_dtype == torch.float16  # older GPUs: fp16 + GradScaler
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+    ctx, scaler = t._autocast(T(big))
+    assert scaler is None and ctx.fast_dtype == torch.bfloat16
+
+
+def test_runtime_prefers_gpu_providers(monkeypatch):
+    from trainwright.runtime import _providers
+
+    class FakeOrt:
+        @staticmethod
+        def get_available_providers():
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    monkeypatch.delenv("TW_ORT_PROVIDERS", raising=False)
+    assert _providers(FakeOrt) == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    monkeypatch.setenv("TW_ORT_PROVIDERS", "CPUExecutionProvider")
+    assert _providers(FakeOrt) == ["CPUExecutionProvider"]

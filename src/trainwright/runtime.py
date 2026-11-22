@@ -66,13 +66,27 @@ class Predictor:
             opts.intra_op_num_threads = threads
             opts.inter_op_num_threads = 1
         self.session = ort.InferenceSession(
-            str(self.dir / "model.onnx"), opts, providers=["CPUExecutionProvider"]
+            str(self.dir / "model.onnx"), opts, providers=_providers(ort)
         )
         self.input_names = [i.name for i in self.session.get_inputs()]
 
     # ------------------------------------------------------------------ inputs
     def _apply_hook(self, instances: list[Any]) -> list[dict[str, Any]]:
         rows = [row if isinstance(row, dict) else {} for row in instances]
+        texts = self.meta.get("text_features") or {}
+        if texts and rows:
+            from .preprocessing import expand_text_features
+
+            cols = {c: [r.get(c) for r in rows] for c in texts}
+            ext = {k: v for k, v in expand_text_features(cols, texts).items() if k not in cols}
+            rows = [{**r, **{k: float(v[i]) for k, v in ext.items()}} for i, r in enumerate(rows)]
+        dates = self.meta.get("date_columns") or {}
+        if dates and rows:
+            from .preprocessing import expand_dates
+
+            cols = {c: [r.get(c) for r in rows] for c in dates}
+            ext = {k: v for k, v in expand_dates(cols, dates).items() if k not in cols}
+            rows = [{**r, **{k: float(v[i]) for k, v in ext.items()}} for i, r in enumerate(rows)]
         if self.hook is None:
             return rows
         import pandas as pd
@@ -149,6 +163,22 @@ class Predictor:
             full[:, np.asarray(self.model.classes_, dtype=int)] = p
             return full
         return np.asarray(self.model.predict(X))
+
+
+def _providers(ort: Any) -> list[str]:
+    """GPU execution providers when onnxruntime-gpu offers one, CPU otherwise.
+
+    Override with TW_ORT_PROVIDERS, e.g. "CPUExecutionProvider" or
+    "CUDAExecutionProvider,CPUExecutionProvider".
+    """
+    import os
+
+    env = os.environ.get("TW_ORT_PROVIDERS")
+    if env:
+        return [p.strip() for p in env.split(",") if p.strip()]
+    avail = set(ort.get_available_providers())
+    gpu = [p for p in ("CUDAExecutionProvider", "ROCMExecutionProvider") if p in avail]
+    return [*gpu, "CPUExecutionProvider"]
 
 
 def _decode_image_input(x: Any) -> Any:

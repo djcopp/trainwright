@@ -66,22 +66,22 @@ def status(project: Project) -> dict[str, Any]:
             f"{split['strategy']} split {split['counts']} (hash {split_hash})"
             if split
             else "no frozen split",
-            "trainwright split",
-            "freeze train/val/test once so every run is comparable and test stays sealed",
+            "trainwright auto --budget 15m",
+            "one command: freeze the split, baselines, strong recipes, ensemble, finalize (stops on time)",
         ),
         _step(
             "baselines",
             bool(baselines),
             f"{len(baselines)} baseline run(s)",
-            "trainwright baseline",
-            "establish the floor a neural model must beat",
+            "trainwright auto --budget 15m",
+            "baselines plus the strong recipes for this modality, ensemble and finalize",
         ),
         _step(
             "train",
             bool(neural),
             f"{len(neural)} neural run(s)",
-            'trainwright train --hypothesis "default recipe"',
-            "train the default small model for this modality",
+            "trainwright auto --budget 15m",
+            "train the strong default recipes for this modality (or `trainwright train` by hand)",
         ),
     ]
     n_with_hyp = sum(1 for r in neural if r.meta.get("hypothesis"))
@@ -152,6 +152,23 @@ def status(project: Project) -> dict[str, Any]:
     todo = [s for s in steps if not s["done"]]
     next_steps = [{"command": s["command"], "why": s["why"]} for s in todo[:2]]
     warnings = []
+    from .autopilot import read_state
+
+    auto = read_state(project)
+    if auto and auto.get("status") == "running":
+        import time
+
+        left = max(0, int(float(auto.get("deadline", 0)) - time.time()))
+        next_steps = [
+            {
+                "command": "trainwright wait --timeout 7m",
+                "why": f"auto is running in the background (~{left // 60}m{left % 60:02d}s of budget left)",
+            }
+        ]
+    elif auto and auto.get("status") in ("failed", "died"):
+        warnings.append(
+            f"last auto run {auto['status']}: {auto.get('error')} (see .trainwright/auto.log)"
+        )
     if failed:
         warnings.append(
             f"{len(failed)} failed/interrupted run(s): {[r.id for r in failed][-3:]}; "
@@ -178,6 +195,7 @@ def status(project: Project) -> dict[str, Any]:
         if best
         else None,
         "stages": steps,
+        "auto": auto,
         "next_steps": next_steps,
         "warnings": warnings,
     }

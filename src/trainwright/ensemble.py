@@ -24,7 +24,7 @@ from .tracking import Run
 
 def member_outputs(project: Project, run: Run, split: str) -> tuple[np.ndarray, np.ndarray]:
     """-> (outputs, y) for one member on a split. Probabilities or target-space predictions."""
-    if run.meta.get("kind") == "ensemble":
+    if run.meta.get("members"):
         return ensemble_outputs(project, run, split)
     if (run.dir / "model.joblib").exists():
         from .evaluate import _baseline_outputs
@@ -43,11 +43,20 @@ def member_outputs(project: Project, run: Run, split: str) -> tuple[np.ndarray, 
 def _average(outs: list[np.ndarray], weights: list[float]) -> np.ndarray:
     w = np.asarray(weights, dtype=np.float64)
     w = w / w.sum()
-    return sum(wi * o for wi, o in zip(w, outs))  # type: ignore[return-value]
+    total: np.ndarray = np.zeros_like(outs[0], dtype=np.float64)
+    for wi, o in zip(w, outs):
+        total = total + wi * o
+    return total
 
 
 def ensemble_outputs(project: Project, run: Run, split: str) -> tuple[np.ndarray, np.ndarray]:
     meta = run.meta
+    if meta.get("bag") and split in ("train", "val"):
+        from .bagging import bag_val_outputs
+
+        return bag_val_outputs(
+            project, run, split
+        )  # out-of-fold: no row scored by a model that saw it
     outs, y = [], None
     for mid in meta["members"]:
         o, yy = member_outputs(project, Run(project.runs_dir / mid), split)
@@ -85,6 +94,7 @@ def build_ensemble(
     top: int = 6,
     seeds: int = 1,
     progress: Callable[[str], None] | None = print,
+    replica_budget_s: float | None = None,
 ) -> Run | None:
     """Greedy-weighted ensemble of the best runs. Returns None if no combination beats the best run."""
     import yaml
@@ -103,9 +113,10 @@ def build_ensemble(
         base_run = Run(project.runs_dir / b["id"])
         base = yaml.safe_load(base_run.config_path.read_text())
         for i in range(1, seeds):
-            exp = ExperimentConfig.model_validate(
-                apply_overrides(base, {"train.seed": int(base["train"]["seed"]) + i})
-            )
+            ov: dict[str, object] = {"train.seed": int(base["train"]["seed"]) + i}
+            if replica_budget_s:
+                ov["train.time_budget"] = f"{max(10, int(replica_budget_s))}s"
+            exp = ExperimentConfig.model_validate(apply_overrides(base, ov))
             say(f"seed replica {i}/{seeds - 1} of {base_run.id}")
             train(
                 project,
@@ -123,8 +134,9 @@ def build_ensemble(
             r
             for r in leaderboard(project)
             if r.get("same_split") is not False
-            and r["kind"] in ("neural", "baseline")
+            and r["kind"] in ("neural", "baseline", "bag")
             and r.get("model") != "baseline:dummy"
+            and not r.get("superseded_by")
             and r.get(f"val_{m}") is not None
             and not (cfg.modality == "image" and r["kind"] == "baseline")
         ]

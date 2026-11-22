@@ -19,7 +19,7 @@ from typing import Any
 import typer
 
 from . import __version__
-from ._utils import to_json, write_json
+from ._utils import fmt_seconds, to_json, write_json
 
 app = typer.Typer(
     add_completion=False,
@@ -403,38 +403,13 @@ def profile(
     ),
 ) -> None:
     """Profile the data: types, missingness, leakage suspects, imbalance, recommendations."""
-    from .data.profile import profile as _profile
-    from .pipeline import get_records
+    from .autopilot import profile_project
 
     STATE["command"] = "profile"
     project = _project()
-    records = get_records(project)
-    prof = _profile(records, project.config, project.state_dir)
-    prof["data_fingerprint"] = records.fingerprint
+    prof = profile_project(project, keep_ids=keep_ids)
     cfg = project.config
-    auto_dropped: list[str] = []
-    if "tabular" in prof and not keep_ids:
-        for c, p in prof["tabular"]["columns"].items():
-            if c not in cfg.data.drop and any(
-                f.startswith(("id-like", "constant")) for f in p.get("flags", [])
-            ):
-                auto_dropped.append(c)
-        if auto_dropped:
-            cfg.data.drop = [*cfg.data.drop, *auto_dropped]
-            project.save()
-            prof["auto_dropped"] = auto_dropped
-            prof["tabular"]["suggested_drop"] = [
-                c for c in prof["tabular"]["suggested_drop"] if c not in auto_dropped
-            ]
-            prof["recommendations"] = [
-                r for r in prof["recommendations"] if not r.startswith("Add to data.drop")
-            ]
-            if prof["tabular"]["suggested_drop"]:
-                prof["recommendations"].insert(
-                    0,
-                    f"Consider adding to data.drop: {prof['tabular']['suggested_drop']} (leakage suspects).",
-                )
-    write_json(project.profile_path, prof)
+    auto_dropped: list[str] = prof.get("auto_dropped", [])
     rec_metric = prof["recommended_metric"]
     lines = [f"{prof['n']} examples ({cfg.modality}, {cfg.task})"]
     if prof.get("dropped_missing_target"):
@@ -486,8 +461,9 @@ def profile(
         "\n".join(lines),
         [
             {
-                "command": "trainwright split",
-                "why": "freeze train/val/test (after editing data.drop if needed)",
+                "command": "trainwright auto --budget 15m",
+                "why": "after fixing data.drop / group_column / features.py: split, baselines, strong "
+                "recipes, ensemble and finalize in one time-boxed command",
             }
         ],
     )
@@ -724,6 +700,217 @@ def tune(
 
 
 # --------------------------------------------------------------------------- runs
+
+
+@app.command()
+def auto(
+    budget: str = typer.Option("20m", help="Total wall-clock budget, e.g. 10m, 1h."),
+    override: list[str] = typer.Option(
+        [], "-o", "--override", help="key=value applied to every neural run (repeatable)."
+    ),
+    finish: bool = typer.Option(
+        True, help="Refit the val-best model on train+val at the end (served by `predict`)."
+    ),
+    seeds: bool = typer.Option(
+        True, help="Add seed replicas of the best neural recipe if time allows."
+    ),
+    background: bool = typer.Option(
+        False,
+        "--background",
+        help="Detach and return at once; follow with `trainwright wait` (for budgets longer than "
+        "your tool timeout).",
+    ),
+) -> None:
+    """Run the whole search in one command: profile, split, baselines, strong recipes, ensemble, finalize."""
+    import subprocess
+    import sys
+
+    from ._utils import parse_duration
+    from .autopilot import autopilot, log_path, read_state
+    from .config import parse_override
+    from .leaderboard import format_table, leaderboard
+
+    STATE["command"] = "auto"
+    project = _project()
+    project.load_user_plugins()
+    budget_s = parse_duration(budget) or 1200.0
+    ov = dict(parse_override(o) for o in override)
+    if background:
+        st = read_state(project)
+        if st and st.get("status") == "running":
+            raise CLIError(f"auto is already running (pid {st['pid']}): `trainwright wait`")
+        project.ensure_dirs()
+        args = [sys.executable, "-m", "trainwright", "auto", "--budget", f"{int(budget_s)}s"]
+        args += [x for o in override for x in ("-o", o)]
+        args += [] if finish else ["--no-finish"]
+        args += [] if seeds else ["--no-seeds"]
+        lp = log_path(project)
+        # the child writes its progress to auto.log itself; raw stdout/stderr (tracebacks) go here
+        with (project.state_dir / "auto.stdout.log").open("a") as f:
+            proc = subprocess.Popen(
+                args, cwd=project.root, stdout=f, stderr=subprocess.STDOUT, start_new_session=True
+            )
+        import time as _time
+
+        from .autopilot import state_path
+
+        now = _time.time()  # written now so `status`/`wait` see it before the child starts up
+        write_json(
+            state_path(project),
+            {
+                "status": "running",
+                "pid": proc.pid,
+                "started": now,
+                "deadline": now + budget_s,
+                "budget_s": budget_s,
+            },
+        )
+        emit(
+            {"pid": proc.pid, "log": str(lp), "budget_s": budget_s},
+            f"auto started in the background (pid {proc.pid}, budget {fmt_seconds(budget_s)}); "
+            f"log: {_rel(lp)}",
+            [
+                {
+                    "command": "trainwright wait --timeout 7m",
+                    "why": "blocks until auto finishes (or the timeout), printing progress; repeat as needed",
+                }
+            ],
+        )
+        return
+    res = autopilot(project, budget_s, ov, finish=finish, seeds=seeds, progress=progress)
+    rows = leaderboard(project)
+    best = res.get("best") or {}
+    lines = ["", format_table(rows, project.config.metric)]
+    nxt = [
+        {
+            "command": f'trainwright evaluate {best.get("id", "best")} --split test --reason "final estimate"',
+            "why": "the one honest number: score the val-picked model on the sealed test split",
+        },
+        {
+            "command": "trainwright predict <new data>",
+            "why": "serves the finalized model" if res.get("final") else "serves the best run",
+        },
+    ]
+    if project.config.modality == "tabular":
+        nxt.append(
+            {
+                "command": "trainwright features best-neural  (then write features.py and rerun auto)",
+                "why": "domain features are where you beat the search; auto skips steps already done",
+            }
+        )
+    else:
+        nxt.append(
+            {
+                "command": f"trainwright evaluate {best.get('id', 'best')}",
+                "why": "val error analysis: confusions and worst examples (label noise? missing classes?)",
+            }
+        )
+    emit(res, "\n".join(lines), nxt)
+
+
+@app.command()
+def wait(
+    timeout: str = typer.Option("7m", help="Give up waiting after this long (auto keeps running)."),
+) -> None:
+    """Wait for a background `trainwright auto` to finish, printing its progress."""
+    import time as _time
+
+    from ._utils import parse_duration
+    from .autopilot import log_path, read_state
+    from .leaderboard import format_table, leaderboard
+
+    STATE["command"] = "wait"
+    project = _project()
+    st = read_state(project)
+    if st is None:
+        raise CLIError("No auto run found. Start one with `trainwright auto --background`.")
+    lp = log_path(project)
+    seen = lp.stat().st_size if lp.exists() else 0
+    end = _time.time() + (parse_duration(timeout) or 420.0)
+    while st and st.get("status") == "running" and _time.time() < end:
+        _time.sleep(5)
+        if lp.exists() and lp.stat().st_size > seen:
+            with lp.open() as f:
+                f.seek(seen)
+                for line in f.read().splitlines():
+                    if line.startswith("[auto"):
+                        progress(line)
+            seen = lp.stat().st_size
+        st = read_state(project)
+    assert st is not None
+    status_ = st.get("status")
+    if status_ == "running":
+        left = float(st.get("deadline", 0)) - _time.time()
+        emit(
+            st,
+            f"auto still running (about {fmt_seconds(left)} of budget left)"
+            if left > 0
+            else "auto is past its budget and finishing its last step (ensemble/finalize)",
+            [{"command": "trainwright wait --timeout 7m", "why": "keep waiting"}],
+        )
+        return
+    if status_ in ("failed", "died"):
+        tail = lp.read_text().splitlines()[-15:] if lp.exists() else []
+        raise CLIError(f"auto {status_}: {st.get('error')}\n" + "\n".join(tail))
+    rows = leaderboard(project)
+    best = st.get("best") or "best"
+    emit(
+        st,
+        "auto finished\n\n" + format_table(rows, project.config.metric),
+        [
+            {
+                "command": f'trainwright evaluate {best} --split test --reason "final estimate"',
+                "why": "the one honest number for the val-picked model (once)",
+            },
+            {"command": "trainwright predict -i <new data>", "why": "serves the finalized model"},
+        ],
+    )
+
+
+@app.command()
+def bag(
+    ref: str = typer.Argument("best-neural", help="Run whose recipe to bag."),
+    folds: int = typer.Option(5, help="Number of folds (= models in the bag)."),
+    budget: str | None = typer.Option(None, help="Total time cap for all folds, e.g. 10m."),
+) -> None:
+    """Cross-validated bag: k copies of a recipe on k folds of train+val, scored out-of-fold."""
+    from ._utils import parse_duration
+    from .bagging import build_bag
+    from .leaderboard import format_table, leaderboard
+
+    STATE["command"] = "bag"
+    project = _project()
+    project.load_user_plugins()
+    run = build_bag(
+        project,
+        ref,
+        k=folds,
+        time_budget_s=parse_duration(budget) if budget else None,
+        progress=progress,
+    )
+    rows = leaderboard(project)
+    emit(
+        {"run": run.id, "summary": run.summary},
+        "\n" + format_table(rows, project.config.metric),
+        [
+            {
+                "command": "trainwright ensemble",
+                "why": "the bag competes in greedy ensembles with its out-of-fold predictions",
+            },
+            {
+                "command": f"trainwright finalize {run.id}",
+                "why": "free: the fold models are already trained on train+val",
+            },
+        ],
+    )
+
+
+@app.command("leaderboard", hidden=True)
+def leaderboard_alias(
+    limit: int = typer.Option(30, help="Rows to show."),
+) -> None:
+    """Alias for `trainwright runs`."""
+    runs_cmd(all_=False, limit=limit)
 
 
 @app.command("runs")
@@ -980,14 +1167,25 @@ def ensemble(
     refs: list[str] = typer.Argument(None, help="Member runs (default: the top runs on val)."),
     top: int = typer.Option(6, help="Candidate pool: this many top runs on val."),
     seeds: int = typer.Option(1, help="Also train N-1 seed replicas of the best neural run first."),
+    replica_budget: str | None = typer.Option(
+        None, help="Time cap per seed replica, e.g. 2m (default: the base run's own settings)."
+    ),
 ) -> None:
     """Average the best runs' calibrated predictions; recorded as a run that competes on the leaderboard."""
+    from ._utils import parse_duration
     from .ensemble import build_ensemble
     from .leaderboard import format_table, leaderboard
 
     STATE["command"] = "ensemble"
     project = _project()
-    run = build_ensemble(project, refs or None, top, seeds, progress=progress)
+    run = build_ensemble(
+        project,
+        refs or None,
+        top,
+        seeds,
+        progress=progress,
+        replica_budget_s=parse_duration(replica_budget) if replica_budget else None,
+    )
     if run is None:
         emit(
             {"run": None},
@@ -1131,6 +1329,17 @@ def predict(
     use_final: bool = typer.Option(
         True, "--final/--no-final", help="Use the run's finalized production model if one exists."
     ),
+    columns: str | None = typer.Option(
+        None,
+        "--columns",
+        help="Comma-separated output columns for --out, e.g. 'prediction' or 'filename,prediction'. "
+        "Available: id, filename (image basename), prediction, confidence.",
+    ),
+    engine: str = typer.Option(
+        "auto",
+        help="auto: torch on the GPU/Apple Silicon when available (no export, much faster for "
+        "images/text), else the exported ONNX bundle; or force 'torch' / 'onnx'.",
+    ),
 ) -> None:
     """Predict with a run's exported bundle (exported automatically if needed).
 
@@ -1174,7 +1383,20 @@ def predict(
                     )
         except FileNotFoundError:
             pass  # a bundle directory path
-    pred = Predictor(_bundle_dir(project, target, auto_export=True))
+    pred: Any = None
+    if engine not in ("auto", "torch", "onnx"):
+        raise CLIError(f"--engine must be auto, torch or onnx (got {engine!r})")
+    from .local_predict import TorchPredictor, accelerator_available
+
+    if engine == "torch" or (engine == "auto" and accelerator_available()):
+        try:
+            from .leaderboard import resolve_ref as _resolve
+
+            pred = TorchPredictor(project, _resolve(project, target))
+        except FileNotFoundError:
+            pred = None  # a bundle directory: use the ONNX path
+    if pred is None:
+        pred = Predictor(_bundle_dir(project, target, auto_export=True))
     suf = input_.suffix.lower()
     ids: list[str]
     if input_.is_dir():
@@ -1213,14 +1435,29 @@ def predict(
     rows = []
     for i in range(0, len(items), 512):
         rows += pred.predict(items[i : i + 512])
+    clf = pred.task == "classification"
+    cols = (
+        [c.strip() for c in columns.split(",") if c.strip()]
+        if columns
+        else (["id", "prediction", "confidence"] if clf else ["id", "prediction"])
+    )
+    avail = {"id", "filename", "prediction"} | ({"confidence"} if clf else set())
+    if bad := [c for c in cols if c not in avail]:
+        raise CLIError(f"Unknown --columns {bad}", f"Available: {sorted(avail)}")
+
+    def cell(k: int, r: dict[str, Any], c: str) -> Any:
+        if c == "id":
+            return ids[k]
+        if c == "filename":
+            return Path(ids[k]).name
+        if c == "confidence":
+            return f"{r['confidence']:.5f}"
+        return r["label"] if clf else r["prediction"]
+
     with out_path.open("w", newline="") as f:
         w = csv.writer(f)
-        if pred.task == "classification":
-            w.writerow(["id", "prediction", "confidence"])
-            w.writerows([ids[k], r["label"], f"{r['confidence']:.5f}"] for k, r in enumerate(rows))
-        else:
-            w.writerow(["id", "prediction"])
-            w.writerows([ids[k], r["prediction"]] for k, r in enumerate(rows))
+        w.writerow(cols)
+        w.writerows([cell(k, r, c) for c in cols] for k, r in enumerate(rows))
     emit(
         {"path": str(out_path), "n": len(rows), "model": target},
         f"wrote {len(rows)} predictions to {_rel(out_path)} (model {target})",

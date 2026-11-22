@@ -131,7 +131,12 @@ def _tw(args: list[str], cwd: Path, timeout: float) -> dict[str, Any]:
         return {"ok": False, "error": (p.stderr or p.stdout)[-800:]}
 
 
-def run_one(data_dir: Path, work: Path, budget: str) -> dict[str, Any]:
+def parse_budget(text: str) -> float:
+    n, unit = float(text[:-1]), text[-1]
+    return n * {"s": 1, "m": 60, "h": 3600}[unit]
+
+
+def run_one(data_dir: Path, work: Path, budget: str, mode: str = "steps") -> dict[str, Any]:
     meta = json.loads((data_dir / "meta.json").read_text())
     proj = work / data_dir.name
     proj.mkdir(parents=True, exist_ok=True)
@@ -160,7 +165,7 @@ def run_one(data_dir: Path, work: Path, budget: str) -> dict[str, Any]:
             )
             if not r.get("ok"):
                 raise RuntimeError(f"init: {r.get('error')}")
-        for step, args, to in [
+        steps = [
             ("profile", ["profile"], 900),
             ("split", ["split"], 900),
             ("baseline", ["baseline", "--only", "dummy,linear,hist_gbm"], 1800),
@@ -178,9 +183,20 @@ def run_one(data_dir: Path, work: Path, budget: str) -> dict[str, Any]:
                 3600,
             ),
             ("ensemble", ["ensemble", "--top", "4"], 1800),
-        ]:
+        ]
+        if (
+            mode == "auto"
+        ):  # the product: one time-boxed command (no finalize: test is scored below)
+            steps = [
+                (
+                    "auto",
+                    ["auto", "--budget", budget, "--no-finish", "-o", "train.device=cpu"],
+                    parse_budget(budget) * 2 + 1800,
+                )
+            ]
+        for step, args, to in steps:
             r = _tw(args, proj, to)
-            if not r.get("ok") and step not in ("ensemble",):
+            if not r.get("ok") and step != "ensemble":
                 raise RuntimeError(f"{step}: {r.get('error')}")
         runs = _tw(["runs"], proj, 300)["result"]
         cfg_metric = _tw(["status"], proj, 120)["result"]["metric"].split()[0]
@@ -217,7 +233,13 @@ def run_one(data_dir: Path, work: Path, budget: str) -> dict[str, Any]:
 
 
 def run(
-    data: Path, work: Path, results: Path, workers: int, budget: str, limit: int | None
+    data: Path,
+    work: Path,
+    results: Path,
+    workers: int,
+    budget: str,
+    limit: int | None,
+    mode: str = "steps",
 ) -> None:
     done = set()
     if results.exists():
@@ -236,7 +258,7 @@ def run(
     print(f"{len(done)} done, {len(todo)} to run with {workers} workers", flush=True)
 
     def task(d: Path) -> None:
-        r = run_one(d, work, budget)
+        r = run_one(d, work, budget, mode)
         with results.open("a") as f:
             f.write(json.dumps(r) + "\n")
         print(
@@ -299,13 +321,19 @@ def main() -> None:
     r.add_argument("--workers", type=int, default=4)
     r.add_argument("--budget", default="4m", help="time budget for the default neural run")
     r.add_argument("--limit", type=int, default=None)
+    r.add_argument(
+        "--mode",
+        choices=["steps", "auto"],
+        default="auto",
+        help="auto: `trainwright auto --budget` (the product); steps: the individual 0.4 pipeline",
+    )
     s = sub.add_parser("report")
     s.add_argument("--results", type=Path, default=ROOT / "scratch" / "suite" / "results.jsonl")
     a = ap.parse_args()
     if a.cmd == "prepare":
         prepare(a.out, a.suites)
     elif a.cmd == "run":
-        run(a.data, a.work, a.results, a.workers, a.budget, a.limit)
+        run(a.data, a.work, a.results, a.workers, a.budget, a.limit, a.mode)
     else:
         print(report(a.results))
 

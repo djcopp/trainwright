@@ -28,47 +28,47 @@ hypotheses, reading diagnoses and deciding what to try next.
 ## The loop
 
 ```bash
-trainwright status                      # where am I, what next? (run this whenever unsure)
 trainwright init --data data.csv --target label     # once; writes trainwright.yaml
-trainwright profile                     # READ the recommendations (leaks, duplicates, group keys)
-#   -> decide the deployment scenario (see below), edit trainwright.yaml if needed
-trainwright split                       # freeze train/val/test (once; duplicate-aware)
-trainwright baseline                    # floor to beat (dummy, linear, gradient boosting / tf-idf)
-trainwright train --hypothesis "default recipe"
-trainwright diagnose latest             # findings + ready-to-run next experiments
-#   -> iterate: features.py, model changes, regularisation ... one hypothesis per run
-trainwright tune --budget 10m           # automated recipe search around the best run
-trainwright ensemble --seeds 3          # seed replicas + greedy-weighted ensemble of the top runs
-trainwright runs                        # validation leaderboard (±SE, ≈ = tied with #1)
-trainwright evaluate best               # val error analysis: confusions, worst examples, image grid
-trainwright evaluate best --split test --reason "final model"   # ONCE
-trainwright finalize best               # production model: chosen recipe on train+val(+test once evaluated)
-trainwright export <final-run>          # ONNX bundle + FastAPI server + Dockerfile + model card
-trainwright benchmark <final-run>       # latency, throughput, $/1M predictions vs the LLM
-trainwright predict <run> -i new.csv --out predictions.csv
+trainwright profile                     # READ it: leaks, duplicates, group keys, recommendations
+#   -> look at the data yourself (pandas), decide the deployment scenario (below),
+#      fix data.drop / data.group_column, write features.py if domain features are obvious
+trainwright auto --budget 20m --background   # the whole search: split, baselines, strong recipes,
+trainwright wait --timeout 7m           #   seed replicas, ensemble, finalize on train+val; repeat
+                                        #   `wait` until it reports "auto finished"
+#   -> your edge: better features / data fixes, then `trainwright auto` again
+#      (it only reruns steps that are stale), or targeted runs on the leader (below)
+trainwright evaluate best --split test --reason "final model"   # ONCE, at the end
+trainwright predict -i holdout.csv --out predictions.csv --columns prediction   # finalized model;
+                                        # --columns picks id/filename/prediction/confidence
+trainwright export final && trainwright benchmark final         # ONNX bundle, server, cost vs LLM
 trainwright report                      # reports/REPORT.md for the human
 ```
 
-Add `--json` to any command for machine-readable output. Every command prints `next:`
-suggestions. Follow them unless you have a reason not to.
+`trainwright status` tells you where you are and what to do next. Add `--json` to any command
+for machine-readable output. Every command prints `next:` suggestions.
 
 ## Use the whole time budget
 
-A first pass (profile → split → baseline → default model) takes minutes. Don't stop there:
-the goal is the **best model you can ship in the time you have**, and a straight prompt to an
-agent without trainwright keeps iterating. After the first pass, work through this list,
-running one hypothesis per experiment, until about 10 minutes remain:
+`auto` gives a strong, well-validated model in one command; that is the floor, not the goal.
+Bigger budgets buy better models (more seeds, longer schedules), so give it **about half of your
+total time**, not just what fits in one tool call: `--background` detaches it, `wait --timeout 7m`
+blocks in bounded chunks. While it runs, read the data and draft `features.py` (don't start other
+training). Spend the rest on what a search cannot do, rerunning `auto` after each change:
 
-1. Fix the data and the deployment scenario (leaks, group keys, `features.py`).
-2. Try the other strong model family for the modality (see below), e.g. `image_probe` vs a
-   fine-tuned backbone, `text_pretrained` with another encoder, MLP vs gradient boosting.
-3. `trainwright tune --budget 10m` around the best recipe.
-4. `trainwright ensemble --seeds 3`: seed replicas of the best neural run plus a greedy-weighted
-   ensemble with the other top runs. Single runs are partly luck: the seed spread it prints is
-   often bigger than the ± on the leaderboard. A seed average is the robust choice, and it competes
-   on the leaderboard like any run.
-5. Then pick the leader on val (ties → simpler/cheaper), evaluate test once, `finalize`, export
-   and predict.
+1. **The data.** Leaks (`profile` flags single-column and sum-of-columns leaks), the deployment
+   scenario (group keys, time), duplicates, label noise (`trainwright review`).
+2. **Features** (`features.py`): domain knowledge the model can't learn from a few thousand rows.
+   Check with `trainwright features <run>` what the model relies on.
+3. **Targeted experiments** on the leader, one hypothesis per run:
+   `trainwright train --from-run <id> -o key=value --hypothesis "..."`; `trainwright tune --budget 10m`;
+   `trainwright ensemble --seeds 3`. Read `trainwright diagnose <id>` and the curves.
+4. Then pick the leader on val (ties → simpler/cheaper), evaluate test once and predict.
+   If `auto` reported it had no time to finalize, **predict with the best run as is**: refitting
+   a big image/text ensemble by hand can take longer than your remaining time. Leave a margin:
+   predictions must exist before your time runs out.
+
+Manual control is always available: `split`, `baseline`, `train`, `ensemble` and `finalize` are
+the same steps `auto` runs.
 
 ## Decide the deployment scenario first
 
@@ -113,10 +113,12 @@ what the model relies on, and drop noise via `data.drop`.
 
 ## What to try, by modality (in roughly this order)
 
-**Tabular** (`tabular_mlp`): quantile-normalised numerics, categorical embeddings, a 3x256
-residual MLP, AdamW + cosine, early stopping.
+**Tabular** (`tabular_mlp`): quantile-normalised numerics with periodic embeddings, categorical
+embeddings, a 3x256 residual MLP, AdamW + cosine, early stopping, and at least 2000 optimiser
+steps however small the data (`train.min_steps`). Across 76 OpenML datasets this default beats
+early-stopped gradient boosting on val ~3 times in 4.
 1. Fix the data first: drop leaks the profile flags; decide the deployment scenario; add `features.py`.
-2. `model.params.num_embedding=periodic` (often a large gain on numeric data), `hidden=512`.
+2. Smooth targets or tiny noisy data: compare `model.params.num_embedding=none`. More capacity: `hidden=512`.
 3. Overfitting → `optim.weight_decay` up (1e-4 → 1e-3 → 1e-2), `model.params.dropout` 0.2-0.4.
 4. Imbalance → `train.class_weights=balanced`. Skewed regression target → `preprocess.target_transform=log1p`.
 5. If HistGradientBoosting still wins or ties after features + tuning, ship it: `trainwright finalize <baseline-run>` then `export`.
@@ -175,7 +177,8 @@ text `tokens` (int64 [B,L], 0 = pad). Return logits `[B, n_outputs]`.
 
 ## Long runs
 
-The CLI blocks while training. For anything that may exceed your tool timeout:
+The CLI blocks while training. `trainwright auto --background` + `trainwright wait` handles the
+search. For single runs that may exceed your tool timeout:
 
 - set a wall-clock budget: `-o train.time_budget=15m` (training stops gracefully, best checkpoint kept), and/or
 - run it in the background and poll: `trainwright show latest` prints epochs so far.

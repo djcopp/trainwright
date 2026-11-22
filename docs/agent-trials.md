@@ -1,250 +1,92 @@
-# Agent trials: does an AI agent build better models with trainwright?
+# Agent trials
 
-trainwright was developed in a loop: give a coding agent a realistic, vague request on a
-lesser-known public dataset, once **with** trainwright and once **without** it, score both on
-data the agent never saw, read the transcripts, fix what went wrong, and repeat.
-
-The harness is [`bench/agent_trials.py`](../bench/agent_trials.py).
+The same vague request goes to Claude Code twice, once with trainwright and once without. Both
+predict a hidden holdout. Then the transcripts are read and the failures fixed. Harness:
+[`bench/agent_trials.py`](../bench/agent_trials.py).
 
 ## Method
 
-- **Agent:** Claude Code in headless mode (`claude -p`, model `sonnet`), tools Bash/Read/Write/Edit/Glob/Grep,
-  the user's global settings excluded, about 40 minutes per task.
-- **Control:** a Python environment with numpy, pandas, scikit-learn, PyTorch, torchvision and matplotlib.
-- **trainwright:** a frozen, non-editable install of trainwright plus `trainwright agent-setup`
-  (AGENTS.md, CLAUDE.md import, Claude Code skill). The prompt is identical in both conditions.
-- **Scoring:** 15% of each dataset is hidden before the agent starts. For images, whole
-  near-duplicate groups are hidden, so burst photos can't leak. Both agents must write
-  `predictions.csv` for the unlabelled holdout, which we score against the hidden labels.
-- **Datasets:**
+| | |
+|---|---|
+| agent | `claude -p --model sonnet`, tools Bash/Read/Write/Edit/Glob/Grep, user settings excluded, ~40 min |
+| prompt only | Python with numpy, pandas, scikit-learn, PyTorch, torchvision, matplotlib |
+| with trainwright | the same, plus a frozen non-editable trainwright install and `trainwright agent-setup` |
+| scoring | 15% hidden before the agent starts (whole near-duplicate groups for images); the agent writes `predictions.csv` |
+| isolation | trial folders outside the repo; PATH pinned; `which trainwright` recorded |
 
-| task | data | prompt (abridged) |
+## Results by round
+
+Holdout scores. **Bold** = better side. "→" = before → after the fix.
+
+| round | version | task | prompt only | trainwright | what the transcripts showed | fix |
+|---|---|---|---|---|---|---|
+| 1 | 0.1 | eye_movements | **0.908** | 0.693 | control built per-assignment features; the playbook said "trainwright for every step" | `features.py` hook; entity-key detection in `profile` |
+| 1 | 0.1 | banking77 | **0.937** | 0.884 | control fine-tuned bge-small; trainwright had no pretrained text model | `text_pretrained`; temperature scaling; `finalize` |
+| 2 | 0.2* | car_parts | 0.991 F1 | **0.992 F1** | control used frozen DINOv2 + logistic regression | DINOv2 backbones, linear probe |
+| 2 | 0.2* | superconduct | **9.60** | 10.87 | shipped HistGBM had 100 rounds, trained on 70% of rows | 1000 early-stopped rounds; `finalize` refits baselines |
+| 3 | 0.3.0 | car_parts | **0.991 F1** | 0.971 F1 | probe reused the fine-tune recipe (LR 1e-3, 15 epochs) | `image_probe` with a probe recipe |
+| 3 | 0.3.0 | superconduct | **9.60** | 10.16 | production model left out already-scored test rows | `finalize` adds test once it is scored |
+| 4 | 0.3.1 | car_parts, superconduct | 0.991 F1, 9.60 | **1.000 F1**, 9.83 | | |
+| 5 | 0.4.0 | eye_movements ×2 | 0.908, 0.696 | **0.859, 0.848** | the prompt-only agent finds the group trick only sometimes; agents skipped `finalize` | `predict` serves the finalized model; bge-small default |
+| 6 | 0.4.1 | banking77 ×2 | 0.931, 0.937 | 0.932, 0.927 | bge-small got 2 epochs: 128-token padding, fp32 | auto `max_length`; bf16 on Apple Silicon (90 s → 26 s/epoch) |
+| 7 | 0.4.2 | banking77 ×2 | **0.931, 0.937** | 0.932, 0.933 | tie | |
+| 8 | 0.5.0 | 8 new tasks | 2 wins | **6 wins** | `auto` ran 3–12 of 40 min; roberta-base missing | `auto --background` + `wait`; roberta-base; bagging |
+| 9 | 0.5.2 | 12 tasks | 5 wins | **7 wins** | a step overran its cap; ties broken by run order; `auto` stopped at 7 of 18 min | guarded steps; log-loss tie-break; budget-filling replicas (0.5.4) |
+
+\* rounds 1–2 accidentally ran against the live dev checkout (harness PATH bug, fixed in round 3).
+
+## Round 9 in full (0.5.2)
+
+| task | metric | prompt only | trainwright |
+|---|---|---|---|
+| bike_sharing | RMSE ↓ | 40.08, 40.36 | **35.99** |
+| app_reviews | RMSE ↓ | 1.077, 1.085 | **0.973** |
+| eye_movements | accuracy | 0.908, 0.696 | **0.870** |
+| eurosat | accuracy | 0.976, 0.954 | **0.986** |
+| telco_churn | accuracy | 0.773, 0.789 | **0.791** |
+| mercedes | RMSE ↓ | 8.320, 8.315 | **8.247** |
+| miniboone | accuracy | 0.946, 0.946 | **0.953** |
+| beans | accuracy | **0.954**, 0.949 | 0.949 |
+| tweet_irony | accuracy | **0.761** (a 2nd run scored 0.855 using a checkpoint trained on the same public data: excluded) | 0.749 |
+| car_parts | accuracy | **0.996** | 0.981 |
+| superconduct | RMSE ↓ | **9.60, 10.16** | 10.04 |
+| banking77 | accuracy | **0.931, 0.937** | 0.893 |
+
+Mean change vs prompt only: **+2.1%** (median +0.8%, best +10.5%, worst −4.3%).
+
+The four losses:
+
+| task | log | fixed in |
 |---|---|---|
-| eye_movements | [OpenML 1044](https://www.openml.org/d/1044), 10,936 rows, 27 features, 3 classes | "do feature exploration and train a model to predict it" |
-| superconduct | [OpenML 44148](https://www.openml.org/d/44148), 21,263 rows, 81 features, regression | "train a model that predicts the critical temperature" |
-| banking77 | [PolyAI/banking77](https://huggingface.co/datasets/PolyAI/banking77), 13,083 messages, 77 intents | "we route messages with an LLM call; train a small model to replace it" |
-| car_parts | [Toyota Corolla car parts](https://huggingface.co/datasets/stevenalbert10/Toyota-Corolla-Car-Parts), 1,353 photos, 8 classes | "we identify parts with a Sonnet agent; can a smaller model run cheaply instead?" |
+| banking77 | `roberta-base` epoch took 417 s under load, the step hung, the agent killed `auto` and shipped TF-IDF | 0.5.3: steps run in a subprocess with a hard deadline; roberta only if 3 epochs fit |
+| car_parts | probe, probe-base and ensemble all scored val 1.000; run order picked the smallest | 0.5.3: exact ties broken by val log-loss |
+| superconduct | `auto` finished at 7.0 of 18 min (one seed replica) | 0.5.4: replicas added while the remaining budget covers finalize |
+| tweet_irony | roberta-base ran and was finalized (val AUC 0.861); 1.2 points on 690 tweets is within noise (SE ≈ 1.6) | not a bug |
 
-## Round 1 (trainwright v0.1)
+## Without an agent
 
+**OpenML-CC18 + CTR23, pipeline vs early-stopped HistGBM, sealed test** (`bench/suite.py`, v0.4.2):
 
-| task | condition | holdout score | wall time | agent cost |
-|---|---|---|---|---|
-| eye_movements | control | **0.908** acc | 23.6 min | $0.23 |
-| eye_movements | trainwright | 0.693 acc | 11.1 min | $0.17 |
-| banking77 | control | **0.937** acc | 19.5 min | $0.29 |
-| banking77 | trainwright | 0.884 acc | 13.7 min | $0.18 |
-
-The control agents won both tasks. The transcripts show why:
-
-1. **eye_movements: feature engineering.** The control agent noticed that every holdout
-   assignment (`assgNo`) also appears in training and built per-assignment aggregates and
-   deviations, taking accuracy from 70% to 86%. The trainwright agent followed the playbook's
-   rule "use trainwright for every step". With no sanctioned place for feature engineering it
-   could only tune models, and it plateaued at the raw-feature ceiling (MLP 0.715, statistically
-   tied with gradient boosting 0.709, which it reported honestly).
-2. **banking77: no pretrained text encoder.** The control agent fine-tuned `bge-small` (33M params)
-   itself. trainwright v0.1 only had bag-of-n-grams and CNN text models, and the trainwright
-   agent correctly reported that none beat TF-IDF. It even named a fine-tuned transformer as the
-   obvious next step, but the framework didn't offer one.
-3. **Process quality was better with trainwright** in both tasks. Both agents ran baselines,
-   stated hypotheses, opened the curve images, read the diagnosis, evaluated test once (and
-   flagged their own slip when they re-read it), reported ties as ties, and recommended routing
-   low-confidence cases to the LLM. They were also 30–50% faster and cheaper.
-4. **Harness bug:** `uv run` leaked the development checkout onto the agents' PATH, so part of
-   the trainwright condition ran on in-progress code, which added noise-aware diagnosis. The
-   harness now pins PATH and records `which trainwright`.
-
-### Changes made because of round 1
-
-| finding | change |
-|---|---|
-| playbook forbade feature engineering | `features.py` hook (fit on train, transform anywhere), applied to baselines, hashed into runs, shipped in bundles; playbook rewritten to encourage it |
-| agents didn't consider whether groups recur at prediction time | `profile` detects entity-key columns (chance-adjusted feature similarity + name) and asks for an explicit seen/unseen-group decision |
-| no pretrained text model | `text_pretrained` (MiniLM by default; any HF encoder) with a bundled tokenizer, now the default text model |
-| "poorly calibrated" on every run; routing advice depended on confidences | temperature scaling fitted on val, applied in evaluate/export |
-| control refit on all data | `trainwright finalize` retrains the chosen recipe on train+val |
-| re-reading test numbers created ledger entries | cached test results |
-| "overfitting" fired while the metric was still improving | separate `overconfident` finding |
-| text cost estimate assumed image-sized prompts | per-modality LLM token estimate at init |
-
-Checked manually on the same eye_movements data: with an assignment-aggregate `features.py`,
-trainwright's MLP reaches 0.853 val accuracy (gradient boosting on the same features: 0.770)
-and **0.876 on the hidden holdout** after `finalize`. On banking77, `text_pretrained` reaches
-0.925 val macro-F1 against 0.873 for TF-IDF.
-
-## Earlier finding: near-duplicate leakage (found before the trials)
-
-While setting up the car-parts task, a linear model on 16×16 pixel thumbnails scored 0.80
-macro-F1. The photos turned out to be bursts taken about 2 seconds apart, so a random split puts
-near-identical frames in train and test. Grouping near-duplicates (256-bit dHash, Hamming ≤ 41)
-dropped that baseline to 0.33. This became trainwright's default duplicate-aware split, and the
-benchmark holdout hides whole groups.
-
-## Round 2 (car_parts and superconduct)
-
-| task | condition | holdout score | wall time | agent cost |
-|---|---|---|---|---|
-| car_parts | control | 0.996 acc / 0.991 macro-F1 | 6.3 min | $0.16 |
-| car_parts | trainwright | 0.989 acc / **0.992** macro-F1 | 8.2 min | $0.20 |
-| superconduct | control | **RMSE 9.60** (R² 0.923) | 8.3 min | $0.13 |
-| superconduct | trainwright | RMSE 10.87 (R² 0.901) | 8.4 min | $0.16 |
-
-**Harness note:** a second PATH bug meant rounds 1 and 2 ran the trainwright condition against
-the *live development checkout*, not the frozen build. Round 2 therefore used roughly the v0.2
-feature set, plus some of the in-progress v0.3 changes. The harness now verifies and records
-`which trainwright`, and round 3 used a frozen, non-editable v0.3.0 install.
-
-- **car_parts: tie** (2 images out of 260). The control agent's best move was frozen
-  **DINOv2-small** embeddings with logistic regression. It also noticed the burst photos and
-  grouped its CV folds by capture time. The trainwright agent fine-tuned ResNet-18, read the
-  `early_peak` diagnosis, lowered the LR, evaluated test once, finalized and benchmarked, and
-  recommended routing the 2–4% of images under 0.9 confidence to the LLM.
-- **superconduct: control better.** Both agents found that gradient boosting beats an MLP here.
-  The trainwright agent correctly shipped the HistGBM baseline because the MLP was statistically
-  tied and the baseline is simpler. But `finalize` only handled neural runs, so it shipped a model
-  trained on 70% of the data with scikit-learn's default 100 boosting rounds. The control agent
-  refit on all the data with 1,500 rounds.
-- The group-key detector flagged `range_atomic_radius`, a physical measurement. The agent
-  correctly ignored it.
-
-### Changes made because of round 2
-
-| finding | change |
-|---|---|
-| frozen self-supervised features win on small image sets | `backbone=dinov2_small/base` and `freeze_backbone=true` (linear probe); playbook step |
-| shipped baseline was undertrained and fit on 70% of the data | HistGBM baseline uses up to 1,000 early-stopped rounds; `finalize` refits baselines on train+val |
-| `evaluate --split test` warned about choosing a run tied with the leader | warning suppressed for statistically tied runs |
-| measurement flagged as a group key | detector requires the relationship to be non-monotonic (ID-like), not smooth |
-| ONNX weights in a sidecar file were reported as a 0.13 MB model | single-file bundles under 1.8 GB; size counts all model files |
-| the MCP server failed on `mcp` 2.x (`FastMCP` renamed) | supports both versions; tested |
-
-## Round 3 (trainwright v0.3.0, frozen and verified)
-
-All four tasks were re-run in the trainwright condition against a frozen, non-editable v0.3.0
-install (`which trainwright` recorded), in folders outside the repo. Controls are reused from
-rounds 1–2, since their environment didn't change.
-
-| task | metric | trainwright (r1/r2) | **trainwright (r3)** | control | wall time r3 vs control |
+| scored | better | exact ties | mean | median | median classification-error cut |
 |---|---|---|---|---|---|
-| eye_movements | accuracy | 0.693 | **0.865** | 0.908 | 7.3 vs 23.6 min |
-| banking77 | accuracy | 0.884 | **0.930** | 0.937 | 25.8 vs 19.5 min |
-| superconduct | RMSE ↓ | 10.87 | **10.16** | 9.60 | 13.9 vs 8.3 min |
-| car_parts | macro-F1 | 0.992 | 0.971 | 0.991 | 11.5 vs 6.3 min |
+| 98 | 63 | 25 | +4.9% | +0.6% | 4.8% |
 
-- **eye_movements:** `profile` flagged `assgNo`. The agent checked that every holdout assignment
-  appears in training, kept the random split on purpose, wrote a `features.py` with
-  per-assignment means and deviations, and picked the simpler of two tied runs. The MLP beat
-  gradient boosting on the same features by 6.6 points (val 84.4% vs 77.8%). Remaining gap to
-  control: the control also used holdout rows' features for its group statistics (transductive)
-  and tuned longer.
-- **banking77:** the default `text_pretrained` (MiniLM) took the agent from 0.884 to 0.930. It
-  also tried bge-small, found it statistically tied, and shipped the smaller model. The gap to
-  control (bge, refit on all data) is about one standard error on 1,960 messages.
-- **superconduct:** both conditions shipped gradient boosting. The remaining gap is training
-  data. `finalize` kept the test split out of the production model (about 72% of the rows vs the
-  control's 85%), even though test had already been scored.
-- **car_parts:** a regression caused by the round-2 playbook change. The agent followed the new
-  "try a DINOv2 linear probe first" step and made a single run. But `freeze_backbone` reused the
-  fine-tuning recipe (LR 1e-3, dropout, label smoothing, 15 epochs), which under-trains a probe
-  head (test macro-F1 0.933).
+**Recipe variants, 76 suite datasets, val only** (`bench/variants.py`):
 
-### Changes made because of round 3
+| tabular MLP recipe | beats HistGBM | mean vs HistGBM |
+|---|---|---|
+| 0.4 default | 49 / 76 | −3.5% |
+| + `train.min_steps=2000` | 51 / 76 | +0.9% |
+| + periodic embeddings (0.5 default) | **58 / 76** | **+4.7%** |
+| + TabM-mini (`k_ensemble=16`), 35 datasets | +0.6% vs default | (kept as a tune option) |
 
-| finding | change |
-|---|---|
-| linear probe under-trained | dedicated `image_probe` model with the standard probe recipe (LR 1e-2, no dropout/smoothing, 30 epochs) |
-| production model withheld already-scored test data | `finalize` includes test automatically once the test evaluation is recorded (`--no-include-test` to opt out) |
-| exporting a production model warned "no test evaluation" | bundles and model cards report the parent run's held-out metrics |
-| benchmark throughput was dominated by resizing 12 MP photos, not the model | benchmark reports model-only vs end-to-end throughput and what dominates |
+**5-fold bagging, 16 small suite datasets, sealed test** (`bench/bagtest.py`):
 
-## Round 4 (v0.3.1: the two round-3 fixes, car_parts and superconduct only)
-
-| task | metric | trainwright r3 | **trainwright r4** | control |
-|---|---|---|---|---|
-| car_parts | macro-F1 | 0.971 | **1.000** (accuracy 1.000) | 0.991 (accuracy 0.996) |
-| superconduct | RMSE ↓ | 10.16 | **9.83** | 9.60 |
-
-The car-parts agent compared `image_probe` with the fine-tuned ResNet-18 and picked the probe.
-For superconduct, including the already-scored test data in the production model closed
-most of the gap.
-
-### Seed luck (found while building ensembles after round 4)
-
-Retraining eye_movements' best MLP recipe with two more seeds gave val accuracy 0.797 and
-0.818, against 0.853 for the original. The bootstrap standard error was ±0.009, so seed noise
-dwarfed validation-sample noise. On test, the three-seed average (0.819) matched the luckiest seed
-(0.817), while the other seeds scored 0.787 and 0.798. A single run is a gamble, so
-`trainwright ensemble --seeds N` now reports the seed spread and records the seed average. The
-playbook asks agents to use their whole budget (features, other model families, tune, then a seed
-ensemble) rather than stopping after the first pass.
-
-## Round 5 (v0.4.0): replicates for both conditions
-
-Single runs turned out to be misleading, so every task now has two straight-prompt (control) runs and
-two trainwright runs. trainwright 0.4.0 added greedy-weighted ensembles with seed replicas,
-and its playbook asks agents to spend their whole budget improving the model.
-
-- **The straight prompt is inconsistent.** Its two eye_movements runs scored **0.908 and 0.696**:
-  one found the per-assignment feature trick and the other didn't. Its superconduct runs scored
-  RMSE 9.60 and 10.16. trainwright's runs landed within 0.011 accuracy and 0.075 RMSE of each
-  other, because `profile` surfaces the group key every time and the lifecycle is the same.
-- **Agents used the new steps** on tabular tasks (`features.py` → `tune` → `ensemble --seeds 3`).
-- **New failure found:** agents went `evaluate --split test` → `predict`, skipping `finalize`, so
-  their predictions came from models trained on about 70% of the data. In banking77 one agent spent
-  its budget on a single fine-tune. Fixed in 0.4.1: `predict` uses the finalized model automatically,
-  the next step after a test evaluation is `finalize`, and the default text encoder is bge-small
-  (the control's choice in both of its runs).
-
-## Round 6 (v0.4.1: banking77 ×2, superconduct ×1)
-
-| task | metric | trainwright r6 | control (2 runs) |
+| comparison | mean | median | record |
 |---|---|---|---|
-| superconduct | RMSE ↓ | **9.571** (best of any run in either condition) | 9.598, 10.156 |
-| banking77 | accuracy | 0.932, 0.927 | 0.931, 0.937 |
+| bag vs the single run it copies | +4.9% | +2.9% | 13 wins, 1 tie, 2 losses |
+| bag vs HistGBM | +10.0% | | 12 / 16 |
+| single run vs HistGBM | +5.2% | | 8 / 16 |
 
-banking77 is now within noise (holdout SE ≈ 0.006), but the transcripts showed why it wasn't
-ahead. Both agents started with the new bge-small default, but with a 7-minute budget only 2
-epochs fit (val 0.895), so they fell back to MiniLM. The cause was speed: every message was padded
-to 128 tokens (mean length 16) and training ran in fp32.
-
-### Changes made because of round 6
-
-| finding | change |
-|---|---|
-| fixed 128-token padding on 16-token messages | `max_length` sized automatically to the train set (multiple of 16 above p99) |
-| fp32 on Apple Silicon | automatic bf16 on MPS for models over 5M parameters (capability-probed) |
-
-Together: a bge-small epoch went from 90 s to 26 s at equal accuracy. A full default run now
-reaches 0.930 val macro-F1 in 4.2 minutes.
-
-## Round 7 (v0.4.2: banking77 ×2)
-
-With automatic sequence length and bf16 on Apple Silicon (bge-small epochs 90 s → 26 s), both
-agents fine-tuned bge-small, finalized and predicted with the production model. Scores: **0.932
-and 0.933**, against the control's 0.931 and 0.937. That's a statistical tie (difference ≈ 0.4 SE).
-
-## Summary across rounds 5–7 (trainwright 0.4.x vs the straight prompt)
-
-| task | metric | straight prompt (2 runs) | trainwright 0.4.x |
-|---|---|---|---|
-| eye_movements | accuracy | 0.802 (0.696–0.908) | **0.853** (0.848–0.859), 2 runs |
-| superconduct | RMSE ↓ | 9.88 (9.60–10.16) | **9.77** (9.57–9.91), 3 runs |
-| banking77 | accuracy | **0.934** (0.931–0.937) | 0.927 (0.914–0.933), 6 runs; 0.932–0.933 on 0.4.2 |
-| car_parts | accuracy | 0.996 | **1.000** (1.000–1.000), 2 runs |
-
-Averaged over tasks: +1.8% on the primary metric, the worst run +5.7% better, and a median
-13.5% fewer errors.
-
-## Next: scale
-
-Four datasets are too few for firm claims. `bench/suite.py` runs trainwright's automated pipeline,
-with no LLM involved, on the 107 datasets of OpenML-CC18 and OpenML-CTR23 against early-stopped
-HistGradientBoosting. `bench/agent_trials.py prepare-suite` and `batch --max-trials N` run the agent A/B on
-the same datasets in capped, resumable chunks.
-
-
-
-
-
-
+A bag's out-of-fold val score is a single-model estimate (blood-transfusion: bag val 0.715 vs
+0.749 for the single run; test 0.748 vs 0.716), so a bag supersedes the run it copies.

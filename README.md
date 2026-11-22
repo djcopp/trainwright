@@ -13,99 +13,102 @@
 
 ---
 
-Many production LLM calls are narrow, repetitive jobs: routing a ticket, classifying a photo,
-scoring a record. A model trained for that one task is often as accurate, hundreds to thousands of
-times cheaper to run, and much faster.
+Routing a ticket, classifying a photo, scoring a record: narrow jobs that often run on an LLM
+call. trainwright trains a small model for the job, checks it properly and packages it to serve.
 
-trainwright is a PyTorch framework for building those models, built around the ML lifecycle.
-In the spirit of PyTorch Lightning it standardises the training loop, data handling and
-experiment tracking. Every command also works as a step an agent can follow: it returns
-structured output, enforces the order of the lifecycle, diagnoses each run and proposes the next
-experiment. That way a coding agent produces the same disciplined result a careful ML engineer would.
+## Results
 
-## Measured improvements
+Same request, same agent (Claude Code on Sonnet), with and without trainwright. Scored on a
+hidden 15% holdout neither agent sees.
 
-Compared with prompting the same agent (Claude Code on Sonnet) without trainwright, on hidden
-holdouts across four public datasets (tabular, image and text) with repeated runs per condition:
+| task | data | metric | prompt only | with trainwright |
+|---|---|---|---|---|
+| hourly bike demand | [bike sharing](https://www.openml.org/d/42712), 17k rows | RMSE ↓ | 40.2 | **36.0** |
+| star rating from review text | [app reviews](https://huggingface.co/datasets/sealuzh/app_reviews), 20k | RMSE ↓ | 1.081 | **0.973** |
+| reading relevance | [eye movements](https://www.openml.org/d/1044), 11k | accuracy | 0.802 | **0.870** |
+| land use from satellite tiles | [EuroSAT](https://huggingface.co/datasets/blanchon/EuroSAT_RGB), 27k images | accuracy | 0.965 | **0.986** |
+| customer churn | [telco churn](https://www.openml.org/d/42178), 7k | accuracy | 0.781 | **0.791** |
+| test-bench time, 377 columns | [Mercedes](https://www.openml.org/d/42570), 4.2k | RMSE ↓ | 8.32 | **8.25** |
+| particle signal vs background | [MiniBooNE](https://www.openml.org/d/41150), 130k | accuracy | 0.946 | **0.953** |
+| leaf disease | [beans](https://huggingface.co/datasets/AI-Lab-Makerere/beans), 1.3k images | accuracy | **0.952** | 0.949 |
+| irony in tweets | [tweet_eval](https://huggingface.co/datasets/cardiffnlp/tweet_eval), 4.6k | accuracy | **0.761** | 0.749 |
+| car-part photos | [car parts](https://huggingface.co/datasets/stevenalbert10/Toyota-Corolla-Car-Parts), 1.4k images | accuracy | **0.996** | 0.981 |
+| superconductor temperature | [superconduct](https://www.openml.org/d/44148), 21k | RMSE ↓ | **9.88** | 10.04 |
+| support intent, 77 classes | [banking77](https://huggingface.co/datasets/PolyAI/banking77), 13k | accuracy | **0.934** | 0.893 |
 
-| | |
-|---|---|
-| **Better results** | wins **3 of 4** tasks and ties the fourth on the latest release, **+1.8%** on the primary metric on average |
-| **Fewer errors** | **13.5% fewer** prediction errors (median across tasks) |
-| **Reliable worst case** | worst run **+5.7%** better on average; run-to-run spread down from 21 points to about 1 on the hardest task |
-| **Same agent cost** | **$0.15–0.23** per task vs $0.13–0.29 |
-| **Cheaper to serve** | the resulting models cost **hundreds to thousands of times less** per prediction than the Sonnet call they replace (`trainwright benchmark` estimates) |
+**Ahead on 7 of 12 tasks; +2.1% on the primary metric on average, up to +10.5%.** trainwright
+0.5.2, one run per task; prompt-only is the mean of 1–2 runs. Three of the four losses trace
+to failures fixed in 0.5.4 (a hung step, a tie broken by run order, unused budget); tweet_irony is
+within noise. Details: [docs/agent-trials.md](docs/agent-trials.md).
 
-Per-task results and method are under [Benchmarks](#benchmarks).
+Without an agent, the automated pipeline against early-stopped gradient boosting on
+OpenML-CC18 + CTR23 (sealed test sets, v0.4.2):
 
-## Highlights
+| datasets | better | median gain | median classification-error cut |
+|---|---|---|---|
+| 98 | 63 | +0.6% | 4.8% |
 
-- **Opinionated lifecycle.** Profile, frozen split, baselines, hypothesis-driven experiments,
-  a sealed test set, a production refit, export and a cost benchmark, all from one CLI.
-- **Built-in leakage controls.** Duplicate- and near-duplicate-aware splits, detection of entity
-  keys (users, sessions, assignments), and a test ledger that flags reuse.
-- **Strong defaults per modality.** Tabular MLPs with periodic embeddings; fine-tuned or
-  linear-probed vision backbones (ResNet, ConvNeXt, DINOv2); pretrained text encoders (bge, MiniLM).
-- **Noise-aware decisions.** Bootstrap standard errors on every score, tie detection on the
-  leaderboard, seed-spread reporting and greedy-weighted ensembles.
-- **Plain-file experiment tracking.** Every run records its config, hypothesis, metrics, curves,
-  diagnosis, git SHA, data fingerprint and split hash. No server required.
-- **Deployable output.** Single-file ONNX bundles with a parity check, a torch-free runtime, a
-  generated FastAPI server, Dockerfile and model card.
-- **Agent integration.** A Claude Code skill, `AGENTS.md`, an MCP server, `--json` on every
-  command and a `next:` hint after every step.
-- **LLM distillation.** Label data with Claude under a spend cap, rank likely label errors and
-  apply tracked corrections.
+## What it looks like
 
-## Installation
+```text
+$ trainwright init --data mercedes.csv --target y
+$ trainwright auto --budget 8m                     # abridged
+[auto 7.1s] profiled data; dropped id-like/constant columns: X11, X93, X95, X107, X207 +12 more
+[auto 7.4s] froze random split {'train': 2504, 'val': 537, 'test': 537}
+[auto 1.3m] baselines: dummy, linear, hist_gbm
+[auto 1.6m] mlp: val_rmse=8.9667 in 8.8s
+[auto 1.7m] mlp-plain: val_rmse=8.6597 in 4.0s
+[auto 4.0m] tune: 11 trials in 2.6m; best neural now 009-tune-r1-t3 val_rmse=8.3662
+[auto 4.8m] trained 4 seed replica(s) of 009-tune-r1-t3
+[auto 4.8m] ensemble ensemble[4]: val_rmse=8.0525
+[auto 5.2m] finalized 021-ensemble on train+val -> 026-final-021-ensemble
+
+#   run                    kind      val_rmse         params
+1   021-ensemble           ensemble  8.0525 ±0.4744   -
+2≈  003-baseline-hist-gbm  baseline  8.2725 ±0.4803   -
+3≈  019-seed3-009-tune...  neural    8.2949 ±0.4689   0.31M
+≈ = within 2 standard errors of #1: the difference is likely noise
+
+$ trainwright evaluate best --split test --reason "final model"
+$ trainwright predict -i holdout.csv --out predictions.csv --columns prediction
+```
+
+<p align="center">
+  <img src="docs/assets/workflow.svg" alt="trainwright workflow: profile, frozen split, baselines, recipe ladder, cross-validated bag, greedy ensemble, finalize, evaluate test once, export, benchmark, serve" width="900">
+</p>
+
+## Install
 
 ```bash
-uv add "trainwright[all]"
-# or
-pip install "trainwright[all]"
+uv add "trainwright[all]"        # or: pip install "trainwright[all]"
 ```
 
 | extra | adds |
 |---|---|
-| `vision` | torchvision backbones and image I/O |
-| `text` | Hugging Face encoders and tokenizers (bge, MiniLM, DINOv2) |
-| `onnx`, `serve` | ONNX export and the FastAPI server |
-| `label` | LLM labelling via the Anthropic API |
-| `mcp` | Model Context Protocol server |
+| `vision` | torchvision backbones, image I/O |
+| `text` | Hugging Face encoders (bge, roberta, MiniLM, DINOv2) |
+| `onnx`, `serve` | ONNX export, FastAPI server |
+| `label` | LLM labelling (Anthropic API) |
+| `mcp` | MCP server |
 
-Requires Python 3.10+. CUDA, Apple Silicon (MPS) and CPU are detected automatically.
+| hardware | training | mixed precision | serving |
+|---|---|---|---|
+| NVIDIA GPU | `cuda` (`train.device=cuda:1` to pick) | bf16 (Ampere+), else fp16 + grad scaling | CUDA provider with `onnxruntime-gpu` |
+| AMD GPU (ROCm PyTorch) | `cuda` | as above | ROCm provider if available |
+| Apple Silicon | `mps` | bf16 above 5M params | CPU |
+| CPU | `cpu` | fp32 | CPU |
 
-## Quickstart
+Budgets adapt to the machine: a slower one trains fewer epochs on a compressed LR schedule.
+Single device; no multi-GPU.
 
-```bash
-trainwright init --data tickets.csv --target intent    # infer task, modality and metric
-trainwright profile                                    # data checks and recommendations
-trainwright split                                      # freeze train / val / test
-trainwright baseline                                   # reference models on the same split
-trainwright train --hypothesis "default recipe"        # first neural run
-trainwright diagnose latest                            # findings and suggested next runs
-trainwright evaluate best --split test --reason "final model"
-trainwright finalize best                              # production model on all usable data
-trainwright export <final-run> && trainwright benchmark <final-run>
-```
-
-Run `trainwright status` at any point to see where the project stands and what to do next.
-
-## Using trainwright with coding agents
-
-Install the agent instructions into a repository once:
+## With a coding agent
 
 ```bash
-trainwright agent-setup        # AGENTS.md, a CLAUDE.md import and a Claude Code skill
+trainwright agent-setup        # AGENTS.md, a CLAUDE.md import, a Claude Code skill
 ```
-
-Then make requests in plain language:
 
 > *We identify car parts in engine-bay photos with a Sonnet agent and it's getting expensive.
 > The labelled photos are in `images/`. Can we train a smaller model that runs cheaply in the cloud?*
-
-The skill gives the agent a playbook to follow, and each command's output tells it what to do
-next. An abridged excerpt from a recorded session:
 
 ```text
 $ trainwright profile
@@ -125,56 +128,37 @@ $ trainwright benchmark 005-final-004-image-pretrained
 cost per 1M predictions (estimate): small model $4.89 · claude-sonnet-5-5 $4,000
 ```
 
+<sub>Recorded session (v0.4, abridged).</sub>
+
 <p align="center">
   <img src="docs/assets/car_parts_samples.jpg" width="430" alt="Sample photos per class">
   <img src="docs/assets/car_parts_confusion.png" width="330" alt="Validation confusion matrix">
 </p>
-<p align="center"><img src="docs/assets/car_parts_curves.png" width="880" alt="Training curves"></p>
-<p align="center"><sub>Data: <a href="https://huggingface.co/datasets/stevenalbert10/Toyota-Corolla-Car-Parts">Toyota Corolla car parts</a> (Apache-2.0). Full walkthrough: <a href="examples/car_parts">examples/car_parts</a>.</sub></p>
+<p align="center"><sub>Data: <a href="https://huggingface.co/datasets/stevenalbert10/Toyota-Corolla-Car-Parts">Toyota Corolla car parts</a> (Apache-2.0). Walkthrough: <a href="examples/car_parts">examples/car_parts</a>.</sub></p>
 
-To use it over MCP instead, register the server with `claude mcp add trainwright -- trainwright mcp`.
+MCP instead of the CLI: `claude mcp add trainwright -- trainwright mcp`.
 
-## Core concepts
+## Commands
 
-| concept | what it means |
+| command | does |
 |---|---|
-| **Project** | A directory with `trainwright.yaml`: data location, target, task, modality and the single primary metric. |
-| **Frozen split** | Train / val / test fixed once, with a data fingerprint. Stratified, grouped or chronological. Duplicates never straddle splits. |
-| **Run** | One training (or baseline, ensemble or production) job, stored under `runs/<id>/`, with its hypothesis and parent run. |
-| **Diagnosis** | Automatic reading of the training curves: overfitting, non-convergence, instability, calibration, comparison with baselines. Each finding comes with concrete overrides. |
-| **Sealed test set** | Model selection happens on val. Test is evaluated once per final model and every access is logged. |
-| **Production model** | `finalize` retrains the chosen recipe on train + val (+ test once it has been scored). Its reported metrics are its parent run's held-out scores. |
-| **Bundle** | The exported artefact: ONNX model(s), preprocessing state, runtime, server, Dockerfile and model card. |
+| `init` | project from a CSV/Parquet file, image folder or manifest |
+| `profile` | types, leaks (incl. sum-of-columns), duplicates, entity keys; dates and free text become features |
+| `auto`, `wait` | the whole search on a budget, finalized; `--background` + `wait` for long budgets |
+| `split`, `baseline`, `train`, `tune`, `bag`, `ensemble` | the individual search steps |
+| `diagnose`, `features`, `runs`, `show`, `status` | curve diagnosis, feature importance, leaderboard (±SE), run details, checklist |
+| `evaluate` | val error analysis, or the logged one-time test evaluation |
+| `finalize` | refit the chosen run on train+val |
+| `export`, `serve`, `predict`, `benchmark` | ONNX bundle, server, batch predictions (GPU via torch when available), cost vs the LLM |
+| `label`, `review` | LLM labels under a spend cap; likely label errors |
+| `report`, `models`, `schema`, `agent-setup`, `mcp` | report, model catalogue, config schema, agent files, MCP server |
 
-## Command reference
-
-| command | purpose |
-|---|---|
-| `init` | Create a project from a CSV/Parquet file, image folder or manifest. |
-| `profile` | Types, missingness, leakage suspects, duplicates, entity keys, imbalance, recommendations. |
-| `split` | Freeze the duplicate-aware train / val / test split. |
-| `baseline` | Dummy, linear, gradient-boosting, TF-IDF or pixel baselines on the same split. |
-| `train` | Train a model; `--from-run` and `-o key=value` for controlled follow-ups. |
-| `diagnose` | Curve diagnosis with ready-to-run next experiments. |
-| `tune` | Successive-halving search around the best recipe. |
-| `ensemble` | Greedy-weighted ensemble of top runs, optionally with seed replicas. |
-| `features` | Permutation feature importance on val (tabular). |
-| `runs`, `show`, `status` | Leaderboard with standard errors, run details, lifecycle checklist. |
-| `evaluate` | Error analysis on val, or the one-time final evaluation on test. |
-| `finalize` | Retrain the chosen run on all usable data. |
-| `export`, `serve`, `predict` | Build the deployable bundle, serve it, or predict files with it. |
-| `benchmark` | Latency, throughput and cost per million predictions compared with an LLM call. |
-| `label`, `review` | Label with an LLM under a spend cap; rank and correct likely label errors. |
-| `report` | Write `reports/REPORT.md` covering data, experiments, evaluation and cost. |
-| `models`, `schema`, `guide`, `agent-setup`, `mcp` | Model catalogue, config schema, agent playbook, agent files, MCP server. |
-
-Every command accepts `--json`. `trainwright <command> --help` lists all options.
+Every command takes `--json` and prints `next:` suggestions.
 
 ## Configuration
 
-`trainwright init` writes a validated `trainwright.yaml`:
-
 ```yaml
+# trainwright.yaml (written by `init`, validated; unknown keys are rejected)
 name: tickets
 task: classification          # or regression
 modality: text                # tabular | image | text
@@ -182,46 +166,31 @@ data:
   path: tickets.csv
   target: intent
   text_column: message
-  drop: []                    # columns never used as features
-  group_column: null          # keep entities in one split
+  drop: []                    # never used as features
+  group_column: null          # entities stay in one split
   time_column: null           # chronological split
+  date_columns: {}            # filled by `profile`
+  text_features: []           # free-text columns in tables, filled by `profile`
 split: {strategy: auto, val: 0.15, test: 0.15, seed: 42, dedup: true}
 metric: macro_f1
-metric_mode: max
-cost:                         # assumptions used by `benchmark`
-  instance_usd_per_hour: 0.05
-  llm_name: claude-sonnet-5-5
-  llm_usd_per_mtok_input: 2.0
-  llm_usd_per_mtok_output: 10.0
 ```
 
-Experiment settings use per-modality defaults and are overridden per run, for example
-`-o optim.lr=3e-4 -o model.params.backbone=dinov2_small`. Unknown keys are rejected.
-`trainwright schema` prints every option.
+Per-run overrides: `-o optim.lr=3e-4 -o model.params.backbone=dinov2_small`. All options: `trainwright schema`.
 
 ## Extending
 
-**Feature engineering.** Put a `features.py` next to `trainwright.yaml`. It is fitted on the
-train split only, applied everywhere (including baselines and serving), and versioned with each run.
-
 ```python
-import pandas as pd
-
-def fit(train: pd.DataFrame) -> dict:
+# features.py: fitted on train only, applied everywhere (baselines, serving), versioned per run
+def fit(train):
     return {"store_mean": train.groupby("store")["basket"].mean().to_dict()}
 
-def transform(df: pd.DataFrame, state: dict) -> pd.DataFrame:
-    df = df.copy()
-    df["store_mean"] = df["store"].map(state["store_mean"])
-    return df
+def transform(df, state):
+    return df.assign(store_mean=df["store"].map(state["store_mean"]))
 ```
 
-**Custom architectures.** Register a module in the project's `models.py`, then train it with
-`-o model.name=my_net`:
-
 ```python
-import torch
-import trainwright as tw
+# models.py: then `trainwright train -o model.name=my_net`
+import torch, trainwright as tw
 
 @tw.register_model("my_net", modality="tabular", recipe={"optim.lr": 3e-3})
 class MyNet(torch.nn.Module):
@@ -235,84 +204,45 @@ class MyNet(torch.nn.Module):
         return self.net(x_num)
 ```
 
+```python
+# the training loop on its own: batches are dicts, "y" is the target, other keys go to forward()
+task = tw.ClassificationTask(Net(), n_classes=10)
+train = tw.TensorLoader({"x": x_train, "y": y_train}, batch_size=64, shuffle=True)
+val = tw.TensorLoader({"x": x_val, "y": y_val}, batch_size=256)
+tw.Trainer(max_epochs=30, monitor="val_accuracy", mode="max", patience=5).fit(task, train, val)
+```
+
 ## Deployment
 
 ```text
 artifacts/<run>/
-├── model.onnx            # or one sub-bundle per member for ensembles
-├── bundle.json           # preprocessing state, classes, metrics, provenance
-├── tw_runtime/           # numpy + onnxruntime inference, no torch
-├── server.py             # FastAPI: /health, /metadata, /predict
+├── model.onnx        # parity-checked; one sub-bundle per member for ensembles
+├── bundle.json       # preprocessing state, classes, metrics, provenance
+├── tw_runtime/       # numpy + onnxruntime, no torch
+├── server.py         # FastAPI: /health, /metadata, /predict
 ├── Dockerfile
-├── requirements.txt
 └── MODEL_CARD.md
 ```
 
 ```bash
-trainwright serve <run>                      # local server
-docker build -t my-model artifacts/<run>     # container
-trainwright predict <run> -i new.csv --out predictions.csv
+trainwright serve <run>
+docker build -t my-model artifacts/<run>
 ```
-
-`trainwright benchmark` reports latency, model-only and end-to-end throughput, and estimated
-cost per million predictions against the LLM call being replaced, printing every assumption it uses.
-
-## Python API
-
-The training primitives can be used directly:
-
-```python
-import trainwright as tw
-
-task = tw.ClassificationTask(MyNet(), n_classes=10)
-train = tw.TensorLoader({"x": x_train, "y": y_train}, batch_size=64, shuffle=True)
-val = tw.TensorLoader({"x": x_val, "y": y_val}, batch_size=256)
-
-trainer = tw.Trainer(max_epochs=30, monitor="val_accuracy", mode="max", patience=5)
-result = trainer.fit(task, train, val)
-```
-
-Batches are dictionaries: `"y"` is the target and every other key is passed to `forward` as a
-keyword argument.
-
-## Benchmarks
-
-trainwright is evaluated with an A/B harness. Claude Code receives the same request on public
-datasets, once with only a standard Python ML environment (the straight prompt) and once with
-trainwright. Both are scored on a 15% holdout neither agent ever sees, with two or more runs per
-condition.
-
-| task | data | metric | straight prompt | with trainwright | change |
-|---|---|---|---|---|---|
-| Reading-relevance prediction | [eye_movements](https://www.openml.org/d/1044), tabular | accuracy | 0.802 (0.696–0.908) | **0.853** (0.848–0.859) | **+5.1 pts** mean, **+15.2 pts** worst case |
-| Critical temperature | [superconduct](https://www.openml.org/d/44148), tabular | RMSE ↓ | 9.88 (9.60–10.16) | **9.77** (9.57–9.91) | **−1.1%** mean, **−2.4%** worst case |
-| Car-part recognition | [car parts](https://huggingface.co/datasets/stevenalbert10/Toyota-Corolla-Car-Parts), photos | accuracy | 0.996 | **1.000** | 1 error → 0 of 260 |
-| Support-intent routing | [banking77](https://huggingface.co/datasets/PolyAI/banking77), text | accuracy | **0.934** (0.931–0.937) | 0.927 (0.914–0.933) | −0.7 pts overall; tied on the latest release (0.932, 0.933) |
-
-On banking77 the straight prompt is ahead on average across all 0.4.x releases. The two runs on 0.4.2, after text training was made 3× faster, are tied with it (0.932 and 0.933 vs 0.931 and 0.937).
-
-A larger, LLM-free benchmark of the automated pipeline on 107 OpenML datasets (CC18 + CTR23) is in `bench/suite.py`.
-
-Method, per-round results and the changes each round produced are documented in
-[docs/agent-trials.md](docs/agent-trials.md). Reproduce with `bench/agent_trials.py`.
 
 ## Limitations
 
-- Single-machine training; no distributed or multi-GPU support.
-- Classification and regression only: no detection, segmentation, multi-label or generation.
-- Cost figures are estimates derived from the assumptions in `trainwright.yaml`.
-- The agent benchmark covers four datasets with a few runs per condition. It shows behaviour,
-  not a statistical guarantee.
+- Classification and regression only.
+- Cost figures are estimates from the `cost:` assumptions in `trainwright.yaml`.
+- The agent comparison is 12 tasks with 1–2 runs per side: differences under ~1% are noise.
 
 ## Development
 
 ```bash
 uv sync --all-extras
-uv run pytest                         # unit and end-to-end tests for every modality
-uv run ruff check src tests && uv run mypy src
+uv run pytest && uv run ruff check src tests && uv run mypy src
 ```
 
-Contributions are welcome. Please open an issue to discuss significant changes first.
+Benchmarks: `bench/agent_trials.py` (agent A/B), `bench/suite.py` (OpenML suites), `bench/variants.py` (recipe comparisons).
 
 ## License
 

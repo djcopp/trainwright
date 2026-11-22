@@ -86,6 +86,7 @@ class Trainer:
         monitor: str = "val_loss",
         mode: str = "min",
         patience: int | None = None,
+        min_steps: int = 0,
         time_budget_s: float | None = None,
         callbacks: list[Callback] | None = None,
         run: Run | None = None,
@@ -97,6 +98,7 @@ class Trainer:
         save_last: bool = False,
     ):
         self.max_epochs = max_epochs
+        self.min_steps = min_steps
         self.device = resolve_device(device)
         self.precision = precision
         self.grad_clip = grad_clip
@@ -125,6 +127,34 @@ class Trainer:
         self._best_state: dict[str, torch.Tensor] | None = None
 
     # ------------------------------------------------------------------ utils
+    def _fit_schedule_to_budget(
+        self,
+        scheduler: Any,
+        steps_per_epoch: int,
+        elapsed: float,
+        epoch: int,
+        last_epoch_s: float,
+        planned: int,
+    ) -> None:
+        """Shrink a cosine schedule so it finishes inside the time budget.
+
+        A run cut off by its budget mid-schedule stops at a high LR (bad for fine-tuning); a
+        compressed schedule decays properly and ends at the budget with a converged model.
+        """
+        horizon = getattr(scheduler, "tw_horizon", None)
+        if not self.time_budget_s or horizon is None or epoch < 1:
+            return
+        # the latest epoch is the best speed estimate (epoch 1 includes loading/tokenising)
+        fits = epoch + int((self.time_budget_s - elapsed) // max(last_epoch_s, 1e-9))
+        new = max(epoch + 1, min(planned, fits))
+        if new != self.max_epochs:
+            horizon["total"] = max(1, new * steps_per_epoch)
+            if new < planned:
+                self.say(
+                    f"time budget fits ~{new} of {planned} epochs: LR schedule compressed to end there"
+                )
+            self.max_epochs = new
+
     def say(self, msg: str) -> None:
         if self.progress:
             self.progress(msg)
@@ -182,13 +212,27 @@ class Trainer:
         assert train_loader is not None and val_loader is not None
         task.to(self.device)
         steps_per_epoch = max(1, math.ceil(len(train_loader) / self.accumulate))  # type: ignore[arg-type]
+        if self.min_steps and steps_per_epoch * self.max_epochs < self.min_steps:
+            new_max = math.ceil(self.min_steps / steps_per_epoch)
+            factor = new_max / self.max_epochs
+            for cb in self.callbacks:
+                if isinstance(cb, EarlyStopping):
+                    cb.patience = math.ceil(cb.patience * factor)
+            self.say(
+                f"small dataset ({steps_per_epoch} steps/epoch): max_epochs {self.max_epochs} -> {new_max} "
+                f"so training gets >= {self.min_steps} steps (train.min_steps); patience scaled x{factor:.1f}"
+            )
+            self.max_epochs = new_max
         optimizer, scheduler, interval = task.configure_optimizers(steps_per_epoch, self.max_epochs)
         amp_ctx, scaler = self._autocast(task)
         t0 = time.time()
         for cb in self.callbacks:
             cb.on_fit_start(self, task)
 
-        for epoch in range(1, self.max_epochs + 1):
+        planned = self.max_epochs
+        epoch = 0
+        while epoch < self.max_epochs:  # max_epochs may shrink to fit a time budget
+            epoch += 1
             self.epoch = epoch
             for cb in self.callbacks:
                 cb.on_epoch_start(self, task, epoch)
@@ -263,6 +307,9 @@ class Trainer:
                 cb.on_epoch_end(self, task, row)
             if self._stop_reason:
                 break
+            self._fit_schedule_to_budget(
+                scheduler, steps_per_epoch, time.time() - t0, epoch, row["epoch_time_s"], planned
+            )
 
         for cb in self.callbacks:
             cb.on_fit_end(self, task)

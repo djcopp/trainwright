@@ -32,6 +32,11 @@ SPACES: dict[str, dict[str, list[Any]]] = {
         "model.params.hidden": [128, 256, 512],
         "model.params.depth": [2, 3, 4],
         "model.params.num_embedding": ["none", "periodic"],
+        "model.params.k_ensemble": [
+            1,
+            1,
+            16,
+        ],  # TabM-mini: helps on some datasets, neutral on average
         "train.batch_size": [128, 256, 512],
     },
     "image": {
@@ -140,6 +145,8 @@ def run_tune(
                     3, min(int(base["train"].get("patience") or epochs), epochs // 3 + 2)
                 ),
                 "train.time_budget": f"{max(10, int(share))}s",
+                # keep the step floor proportional so early rungs stay short on small data
+                "train.min_steps": int(int(base["train"].get("min_steps") or 0) * epochs / E),
             }
             exp = ExperimentConfig.model_validate(apply_overrides(base, ov))
             desc = ", ".join(f"{k}={v}" for k, v in ch.items()) or "base recipe"

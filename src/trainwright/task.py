@@ -48,6 +48,12 @@ class Task(nn.Module):
 
     def training_step(self, batch: Batch) -> dict[str, torch.Tensor]:
         out = self(batch)
+        if out.ndim == 3 and hasattr(self.model, "aggregate"):  # [B, k, out]: k ensemble members
+            loss = torch.stack(
+                [self.loss(out[:, j], batch["y"]) for j in range(out.shape[1])]
+            ).mean()
+            agg = self.model.aggregate(out)  # type: ignore[operator]
+            return {"loss": loss, "outputs": agg.detach()}
         return {"loss": self.loss(out, batch["y"]), "outputs": out.detach()}
 
     def validation_step(self, batch: Batch) -> dict[str, torch.Tensor]:
@@ -94,14 +100,17 @@ class Task(nn.Module):
         total = max(1, steps_per_epoch * max_epochs)
         warm = int(cfg.warmup_epochs * steps_per_epoch)
         if cfg.scheduler == "cosine":
+            horizon = {"total": total}  # mutable: the trainer shrinks it to fit a time budget
 
             def f(step: int) -> float:
                 if step < warm:
                     return 0.01 + 0.99 * step / max(1, warm)
-                prog = (step - warm) / max(1, total - warm)
+                prog = (step - warm) / max(1, horizon["total"] - warm)
                 return 0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi * min(1.0, prog)))
 
-            return opt, torch.optim.lr_scheduler.LambdaLR(opt, f), "step"
+            cos = torch.optim.lr_scheduler.LambdaLR(opt, f)
+            cos.tw_horizon = horizon  # type: ignore[attr-defined]
+            return opt, cos, "step"
         if cfg.scheduler == "onecycle":
             max_lrs = [g["lr"] for g in opt.param_groups]
             sched = torch.optim.lr_scheduler.OneCycleLR(

@@ -179,6 +179,7 @@ def train(
             monitor=monitor,
             mode=mode,
             patience=exp.train.patience,
+            min_steps=exp.train.min_steps,
             time_budget_s=parse_duration(exp.train.time_budget),
             callbacks=callbacks,
             run=run,
@@ -231,7 +232,7 @@ def train(
             "metric_mode": mode,
             "best_epoch": result.best_epoch,
             "epochs_run": result.epochs_run,
-            "max_epochs": exp.train.max_epochs,
+            "max_epochs": trainer.max_epochs,
             "stop_reason": result.stop_reason,
             "train_time_s": result.train_time_s,
             "val": {k[4:]: v for k, v in best.items() if k.startswith("val_")},
@@ -270,7 +271,11 @@ def load_checkpoint(run: Run) -> dict[str, Any]:
 
 
 def load_task_and_data(
-    project: Project, run: Run, splits: tuple[str, ...] = ("train", "val"), device: str = "auto"
+    project: Project,
+    run: Run,
+    splits: tuple[str, ...] = ("train", "val"),
+    device: str = "auto",
+    ids: list[str] | None = None,
 ) -> tuple[Task, ProjectDataModule, dict[str, Any]]:
     """Rebuild the exact model + preprocessing of a run from its checkpoint."""
     project.load_user_plugins()
@@ -282,6 +287,8 @@ def load_task_and_data(
         raise LifecycleError(
             f"Run {run.id} was trained on a different split; it cannot be evaluated on this one."
         )
+    if ids is not None:  # predict arbitrary rows (e.g. a bag fold's out-of-fold rows) as "val"
+        split = {**split, "val": list(ids)}
     dev = resolve_device(device)
     dm = ProjectDataModule(
         project.config,
@@ -301,8 +308,10 @@ def load_task_and_data(
     return task, dm, ckpt
 
 
-def predict_split(project: Project, run: Run, split: str) -> dict[str, Any]:
-    task, dm, ckpt = load_task_and_data(project, run, splits=("train", split))
+def predict_split(
+    project: Project, run: Run, split: str, ids: list[str] | None = None
+) -> dict[str, Any]:
+    task, dm, ckpt = load_task_and_data(project, run, splits=("train", split), ids=ids)
     trainer = Trainer(device=dm.device, progress=None)
     raw, y, loss = trainer.predict_raw(task, dm.dataloader(split, train=False))
     return {
@@ -386,6 +395,8 @@ def finalize(
     """
     import yaml
 
+    if run.meta.get("bag"):
+        return _finalize_bag(project, run, include_test, progress)
     if run.meta.get("members"):
         return _finalize_ensemble(project, run, include_test, progress)
     if run.meta.get("kind") == "baseline":
@@ -402,7 +413,12 @@ def finalize(
     exp = exp.model_copy(
         update={
             "train": exp.train.model_copy(
-                update={"max_epochs": max(1, epochs), "patience": None, "time_budget": None}
+                update={
+                    "max_epochs": max(1, epochs),
+                    "patience": None,
+                    "time_budget": None,
+                    "min_steps": 0,
+                }
             )
         }
     )
@@ -425,6 +441,43 @@ def finalize(
             "split_hash": split["split_hash"],
         },
     )
+
+
+def _finalize_bag(
+    project: Project, run: Run, include_test: bool, progress: Callable[[str], None] | None
+) -> Run:
+    """A bag is already trained on train+val: its production model is the same k fold models."""
+    if include_test and progress:
+        progress("note: a bag's fold models are not retrained, so test is not added to training")
+    final = Run.create(
+        project.runs_dir,
+        f"final-{run.id}",
+        kind="final",
+        parent=run.id,
+        tags=["final", "bag"],
+        hypothesis=f"production model: {run.id}'s fold models (already trained on train+val)",
+        project_root=project.root,
+        extra_meta={
+            "members": run.meta["members"],
+            "weights": run.meta["weights"],
+            "model": run.meta.get("model"),
+            "split_hash": run.meta.get("split_hash"),
+            "data_fingerprint": run.meta.get("data_fingerprint"),
+            "trained_on": ["train", "val"],
+            "includes_test": False,
+        },
+    )
+    final.write_summary(
+        {
+            "kind": "final",
+            "model": run.meta.get("model"),
+            "parent": run.id,
+            "members": run.meta["members"],
+            "note": f"the k fold models of {run.id}; quote {run.id}'s held-out numbers",
+        }
+    )
+    final.set_status("completed")
+    return final
 
 
 def _finalize_ensemble(

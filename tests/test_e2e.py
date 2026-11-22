@@ -6,7 +6,7 @@ import json
 
 import numpy as np
 
-FAST = ["-o", "train.device=cpu"]
+FAST = ["-o", "train.device=cpu", "-o", "train.min_steps=0"]
 
 
 def test_tabular_classification_lifecycle(tabular_project):
@@ -320,3 +320,186 @@ def test_predict_prefers_the_finalized_model(tabular_project):
     fid = tw("finalize", rid)["result"]["run"]
     after = tw("predict", rid, "-i", "new.csv", "--out", "p.csv")["result"]
     assert after["model"] == fid
+
+
+def test_auto_runs_the_whole_search_and_finalizes(regression_project):
+    tw = regression_project
+    tw("init", "--data", "houses.csv", "--target", "price")
+    res = tw("auto", "--budget", "3m", *FAST, "-o", "train.max_epochs=6")["result"]
+    assert res["best"] is not None and res.get("final")
+    models = {r["model"] for r in tw("runs")["result"]}
+    assert {"baseline:hist_gbm", "tabular_mlp"} <= models
+    # rerunning skips everything that is already up to date
+    again = tw("auto", "--budget", "60s", *FAST, "-o", "train.max_epochs=6", "--no-seeds")
+    assert not any("baselines:" in line for line in again["result"]["log"])
+
+
+def test_profile_flags_a_target_that_is_a_sum_of_columns():
+    import pandas as pd
+
+    from trainwright.data.profile import _leakage_scan
+
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame({"temp": rng.normal(size=2000), "hour": rng.integers(0, 24, 2000)})
+    y = np.exp(df["temp"]) * 50 + df["hour"] * 3
+    share = rng.uniform(0, 1, 2000)
+    df["casual"], df["registered"] = y * share, y * (1 - share)
+    leaks = _leakage_scan(df, y.to_numpy(), "regression")
+    assert leaks and set(leaks[0]["column"].split(", ")) == {"casual", "registered"}
+
+
+def test_auto_background_and_wait(regression_project):
+    tw = regression_project
+    tw("init", "--data", "houses.csv", "--target", "price")
+    started = tw("auto", "--budget", "60s", "--background", *FAST, "-o", "train.max_epochs=4")
+    assert started["result"]["pid"] > 0
+    assert tw("status")["next_steps"][0]["command"].startswith("trainwright wait")
+    done = tw("wait", "--timeout", "15m")["result"]
+    assert done["status"] == "done" and done["best"]
+
+
+def test_bag_scores_out_of_fold_and_finalizes_for_free(tabular_project):
+    tw = tabular_project
+    tw("init", "--data", "data.csv")
+    tw("split")
+    tw("baseline", "--only", "dummy,hist_gbm")
+    rid = tw("train", *FAST, "-o", "train.max_epochs=4", "-H", "base")["result"]["run"]
+    bag = tw("bag", rid, "--folds", "3")["result"]
+    s = bag["summary"]
+    assert s["val"]["roc_auc"] > 0.7 and s["n_oof"] > s.get("n_val", 0)
+    rows = tw("runs")["result"]
+    assert not any(r["kind"] == "fold" for r in rows) and any(r["kind"] == "bag" for r in rows)
+    tw("ensemble")  # a bag can be an ensemble member (out-of-fold val predictions)
+    final = tw("finalize", bag["run"])["result"]
+    assert final["run"].startswith(tuple("0123456789"))
+    tw("export", final["run"])
+    pred = tw("predict", final["run"], "-i", "data.csv", "--limit", "3")["result"]
+    assert len(pred) == 3
+
+
+def test_date_strings_are_expanded_into_features(tmp_path):
+    import pandas as pd
+    from conftest import TW
+
+    rng = np.random.default_rng(3)
+    n = 1500
+    ts = pd.Timestamp("2023-01-01") + pd.to_timedelta(rng.integers(0, 365 * 24, n), unit="h")
+    y = 10 * (ts.dayofweek >= 5) + 0.5 * ts.hour + rng.normal(scale=0.5, size=n)
+    df = pd.DataFrame(
+        {"when": ts.strftime("%Y-%m-%d %H:%M:%S"), "noise": rng.normal(size=n), "y": y}
+    )
+    df.to_csv(tmp_path / "d.csv", index=False)
+    tw = TW(tmp_path)
+    tw("init", "--data", "d.csv", "--target", "y")
+    prof = tw("profile")["result"]
+    assert prof["date_columns"] == {"when": "iso"}
+    tw("split")
+    base = tw("baseline", "--only", "dummy,hist_gbm")["result"]["leaderboard"]
+    gbm = next(r for r in base if r["model"] == "baseline:hist_gbm")
+    dummy = next(r for r in base if r["model"] == "baseline:dummy")
+    assert gbm["val_rmse"] < 0.3 * dummy["val_rmse"]  # weekday/hour recovered from the string
+    rid = tw("train", *FAST, "-o", "train.max_epochs=3", "-H", "dates")["result"]["run"]
+    pred = tw("predict", rid, "-i", "d.csv", "--limit", "2")["result"]
+    assert len(pred) == 2
+
+
+def test_text_columns_in_tables_become_features(tmp_path):
+    import pandas as pd
+    from conftest import TW
+
+    rng = np.random.default_rng(4)
+    n = 1200
+    words = {
+        "red": ["cherry", "plum", "tannic", "oak"],
+        "white": ["citrus", "crisp", "apple", "mineral"],
+    }
+    filler = [
+        "a",
+        "lovely",
+        "wine",
+        "with",
+        "notes",
+        "of",
+        "and",
+        "finish",
+        "long",
+        "bright",
+        "the",
+    ]
+    label = rng.choice(["red", "white"], n)
+    desc = [
+        " ".join(
+            rng.choice(filler, 8).tolist()
+            + rng.choice(words[lab], 2).tolist()
+            + rng.choice(filler, 6).tolist()
+        )
+        for lab in label
+    ]
+    df = pd.DataFrame(
+        {
+            "description": desc,
+            "price": rng.normal(20, 5, n).round(2),
+            "points": rng.integers(80, 100, n),
+            "country": rng.choice(["fr", "it", "us"], n),
+            "colour": label,
+        }
+    )
+    df.to_csv(tmp_path / "w.csv", index=False)
+    tw = TW(tmp_path)
+    tw("init", "--data", "w.csv", "--target", "colour")
+    prof = tw("profile")["result"]
+    assert prof["text_features"] == ["description"]
+    tw("split")
+    rows = tw("baseline", "--only", "dummy,hist_gbm")["result"]["leaderboard"]
+    gbm = next(r for r in rows if r["model"] == "baseline:hist_gbm")
+    assert gbm["val_roc_auc"] > 0.95  # the label lives only in the text
+    rid = tw("train", *FAST, "-o", "train.max_epochs=3", "-H", "text")["result"]["run"]
+    tw("export", rid)
+    pred = tw("predict", rid, "-i", "w.csv", "--limit", "3")["result"]
+    assert len(pred) == 3
+
+
+def test_guarded_step_is_killed_at_its_deadline(regression_project):
+    import os
+    import time
+
+    from trainwright._utils import write_json
+    from trainwright.autopilot import _guarded, state_path
+    from trainwright.project import Project
+
+    tw = regression_project
+    tw("init", "--data", "houses.csv", "--target", "price")
+    project = Project.load(tw.root)
+    project.ensure_dirs()
+    # a "running" auto owned by this (alive) process: `wait` would block for 10 minutes
+    write_json(
+        state_path(project),
+        {"status": "running", "pid": os.getpid(), "deadline": time.time() + 999},
+    )
+    t0 = time.time()
+    res, err = _guarded(project, ["wait", "--timeout", "10m"], 1)
+    assert res is None and "killed" in err and time.time() - t0 < 60
+
+
+def test_torch_and_onnx_predictions_match(tabular_project):
+    import csv
+
+    tw = tabular_project
+    tw("init", "--data", "data.csv")
+    tw("split")
+    tw("baseline", "--only", "dummy,hist_gbm")
+    tw("train", *FAST, "-o", "train.max_epochs=3", "-H", "a")
+    tw("train", *FAST, "-o", "train.max_epochs=3", "-o", "train.seed=1", "-H", "b")
+    bag = tw("bag", "003", "--folds", "2")["result"]["run"]  # multi-member path
+    for ref in ("003", bag, "002"):
+        out = {}
+        for engine in ("torch", "onnx"):
+            p = tw.root / f"p-{engine}.csv"
+            tw("predict", ref, "-i", "data.csv", "--out", str(p), "--engine", engine, "--no-final")
+            out[engine] = list(csv.DictReader(p.open()))
+        assert [r["prediction"] for r in out["torch"]] == [r["prediction"] for r in out["onnx"]]
+        diffs = [
+            abs(float(a["confidence"]) - float(b["confidence"]))
+            for a, b in zip(out["torch"], out["onnx"])
+        ]
+        assert max(diffs) < 1e-4

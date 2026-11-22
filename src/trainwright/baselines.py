@@ -94,6 +94,7 @@ def _make_tabular(name: str, task: str, pre: TabularPreprocessor, seed: int) -> 
                             handle_unknown="use_encoded_value",
                             unknown_value=-1,
                             encoded_missing_value=-1,
+                            max_categories=250,  # HistGBM's native categoricals cap at 255 levels
                         ),
                     ),
                     cat,
@@ -251,6 +252,7 @@ def run_baselines(
                 "model": f"baseline:{name}",
                 "split_hash": split["split_hash"],
                 "data_fingerprint": records.fingerprint,
+                "features_sha": hook.sha if hook is not None else None,
                 "status": "completed",
             },
         )

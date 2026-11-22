@@ -71,6 +71,9 @@ def _example_inputs(dm: Any, n: int = 4) -> dict[str, torch.Tensor]:
 
 def export_onnx(task: Any, dm: Any, path: Path) -> dict[str, Any]:
     model = task.model.cpu().eval()
+    for m in model.modules():  # trace the real computation, not the training-time feature cache
+        if hasattr(m, "cache_features"):
+            m.cache_features = False
     example = _example_inputs(dm)
     present = [k for k, v in example.items() if v.ndim < 2 or v.shape[1] > 0]
     absent = {k: (0, v.dtype) for k, v in example.items() if k not in present}
@@ -161,6 +164,8 @@ def export_run(
         "modality": cfg.modality,
         "task": cfg.task,
         "classes": split.get("classes"),
+        "date_columns": dict(cfg.data.date_columns),
+        "text_features": _text_feature_states(project),
         "primary_metric": cfg.metric,
         "val_metrics": held_out.summary.get("val"),
         "metrics_from_run": held_out.id,
@@ -270,6 +275,17 @@ def _example_instances(project: Project, split: dict[str, Any], n: int = 2) -> l
     if project.config.modality == "text":
         return list(recs.texts or [])
     return [str(p) for p in (recs.paths or [])]
+
+
+def _text_feature_states(project: Project) -> dict[str, Any]:
+    if not project.config.data.text_features:
+        return {}
+    from ._utils import sha256_file
+    from .data.records import text_feature_states
+
+    p = Path(project.config.data.path)
+    path = p if p.is_absolute() else (project.root / p).resolve()
+    return text_feature_states(project.state_dir, project.config, None, sha256_file(path))
 
 
 def model_card(project: Project, run: Run, bundle: dict[str, Any]) -> str:

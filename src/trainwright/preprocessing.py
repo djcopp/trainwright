@@ -75,7 +75,7 @@ class NumericTransformer:
         X = np.asarray(X, dtype=np.float64)
         if X.ndim == 1:
             X = X[None, :]
-        out = np.empty((X.shape[0], len(self.columns)), dtype=np.float64)
+        out: np.ndarray = np.empty((X.shape[0], len(self.columns)), dtype=np.float64)
         indicators = []
         ref = np.asarray(self.references)
         for j in range(len(self.columns)):
@@ -95,6 +95,9 @@ class NumericTransformer:
                 indicators.append(miss.astype(np.float64))
         if indicators:
             out = np.concatenate([out, np.stack(indicators, axis=1)], axis=1)
+        # denormal or near-identical quantiles can make interp produce inf/NaN
+        lim = float(self.clip) if self.clip else 1e6
+        out = np.nan_to_num(out, nan=0.0, posinf=lim, neginf=-lim)
         if self.clip:
             out = np.clip(out, -self.clip, self.clip)
         return out.astype(np.float32)
@@ -521,9 +524,14 @@ class TargetScaler:
         self.transform_name = transform
         self.mean = 0.0
         self.std = 1.0
+        self.lo: float | None = None
+        self.hi: float | None = None
 
     def fit(self, y: np.ndarray) -> TargetScaler:
-        z = self._forward_raw(np.asarray(y, dtype=np.float64))
+        y = np.asarray(y, dtype=np.float64)
+        # predictions are clipped to the training range: no negative counts, no wild extrapolation
+        self.lo, self.hi = float(np.nanmin(y)), float(np.nanmax(y))
+        z = self._forward_raw(y)
         if self.transform_name in ("standard", "log1p"):
             self.mean = float(z.mean())
             sd = float(z.std())
@@ -546,13 +554,175 @@ class TargetScaler:
         y = np.asarray(z, dtype=np.float64) * self.std + self.mean
         if self.transform_name == "log1p":
             y = np.expm1(y)
+        if self.lo is not None and self.hi is not None:
+            y = np.clip(y, self.lo, self.hi)
         return y
 
     def state_dict(self) -> dict[str, Any]:
-        return {"transform": self.transform_name, "mean": self.mean, "std": self.std}
+        return {
+            "transform": self.transform_name,
+            "mean": self.mean,
+            "std": self.std,
+            "lo": self.lo,
+            "hi": self.hi,
+        }
 
     @classmethod
     def from_state(cls, s: dict[str, Any]) -> TargetScaler:
         obj = cls(s["transform"])
         obj.mean, obj.std = s["mean"], s["std"]
+        obj.lo, obj.hi = s.get("lo"), s.get("hi")
         return obj
+
+
+# --------------------------------------------------------------------------- dates
+
+DATE_FORMATS = [
+    "iso",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y/%m/%d",
+    "%m/%d/%Y",
+    "%d/%m/%Y",
+    "%m/%d/%Y %H:%M",
+    "%d/%m/%Y %H:%M",
+    "%d-%m-%Y",
+    "%d.%m.%Y",
+    "%b %d, %Y",
+    "%d %b %Y",
+]
+DATE_PARTS = ("year", "month", "day", "weekday", "hour", "dayofyear", "ts")
+
+
+def _parse_date(v: Any, fmt: str) -> Any:
+    from datetime import datetime
+
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        if fmt == "iso":
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return datetime.strptime(s, fmt)
+    except ValueError:
+        return None
+
+
+def detect_date_format(values: list[Any], min_share: float = 0.95) -> str | None:
+    """A strptime format (or 'iso') that parses nearly all non-empty values, else None."""
+    sample = [str(v).strip() for v in values if v is not None and str(v).strip()][:500]
+    if len(sample) < 5 or not all(any(c in s for c in "-/.: ") for s in sample[:50]):
+        return None
+    if all(s.replace(".", "", 1).lstrip("-").isdigit() for s in sample[:50]):
+        return None  # plain numbers are not dates
+    for fmt in DATE_FORMATS:
+        ok = sum(_parse_date(s, fmt) is not None for s in sample)
+        if ok >= min_share * len(sample):
+            return fmt
+    return None
+
+
+def expand_dates(columns: dict[str, Any], spec: dict[str, str]) -> dict[str, Any]:
+    """Add ``<col>__<part>`` float columns for each date column in ``spec`` (raw column kept)."""
+    from datetime import datetime, timezone
+
+    out = dict(columns)
+    for col, fmt in spec.items():
+        if col not in columns:
+            continue
+        parsed = [_parse_date(v, fmt) for v in columns[col]]
+        for part in DATE_PARTS:
+            vals = []
+            for d in parsed:
+                if d is None:
+                    vals.append(np.nan)
+                elif part == "ts":
+                    if d.tzinfo is not None:
+                        d = d.astimezone(timezone.utc).replace(tzinfo=None)
+                    vals.append((d - datetime(1970, 1, 1)).total_seconds())
+                elif part == "weekday":
+                    vals.append(float(d.weekday()))
+                elif part == "dayofyear":
+                    vals.append(float(d.timetuple().tm_yday))
+                else:
+                    vals.append(float(getattr(d, part)))
+            out[f"{col}__{part}"] = np.asarray(vals, dtype=np.float64)
+    return out
+
+
+# --------------------------------------------------------------------------- text columns in tables
+
+_TOKEN_RE = re.compile(r"(?u)\b\w\w+\b")  # scikit-learn's default token pattern
+
+
+def _word_ngrams(text: str, n: int = 2) -> list[str]:
+    toks = _TOKEN_RE.findall(text.lower())
+    out = list(toks)
+    for k in range(2, n + 1):
+        out += [" ".join(toks[i : i + k]) for i in range(len(toks) - k + 1)]
+    return out
+
+
+def fit_text_svd(texts: list[str], dims: int = 32, max_features: int = 5000) -> dict[str, Any]:
+    """TF-IDF (word 1-2 grams, sublinear tf) -> truncated SVD, fitted without labels.
+
+    The transform is stored as plain arrays so the numpy-only runtime can reproduce it.
+    """
+    from sklearn.decomposition import TruncatedSVD
+    from sklearn.feature_extraction.text import TfidfVectorizer
+
+    vec = TfidfVectorizer(
+        ngram_range=(1, 2), sublinear_tf=True, min_df=2, max_features=max_features, dtype=np.float64
+    )
+    X = vec.fit_transform([t or "" for t in texts])
+    k = int(max(1, min(dims, X.shape[1] - 1, X.shape[0] - 1)))
+    svd = TruncatedSVD(k, random_state=0).fit(X)
+    vocab = vec.vocabulary_
+    terms = [""] * len(vocab)
+    for t, i in vocab.items():
+        terms[i] = t
+    return {
+        "terms": terms,
+        "idf": np.round(vec.idf_, 6).tolist(),
+        "components": np.round(svd.components_, 6).tolist(),
+    }
+
+
+def text_svd_transform(texts: list[Any], state: dict[str, Any]) -> np.ndarray:
+    """[N, dims] SVD features for raw texts, identical to the fitted scikit-learn pipeline."""
+    index = state.get("_index")
+    if index is None:
+        index = {t: i for i, t in enumerate(state["terms"])}
+        state["_index"] = index
+    idf = np.asarray(state["idf"], dtype=np.float64)
+    comps = np.asarray(state["components"], dtype=np.float64)
+    out = np.zeros((len(texts), comps.shape[0]), dtype=np.float64)
+    for r, t in enumerate(texts):
+        if t is None or (isinstance(t, float) and math.isnan(t)):
+            continue
+        counts: dict[int, int] = {}
+        for g in _word_ngrams(str(t)):
+            j = index.get(g)
+            if j is not None:
+                counts[j] = counts.get(j, 0) + 1
+        if not counts:
+            continue
+        cols = np.fromiter(counts.keys(), dtype=np.int64)
+        tf = 1.0 + np.log(np.fromiter(counts.values(), dtype=np.float64))
+        w = tf * idf[cols]
+        w /= np.linalg.norm(w) or 1.0
+        out[r] = comps[:, cols] @ w
+    return out
+
+
+def expand_text_features(columns: dict[str, Any], states: dict[str, Any]) -> dict[str, Any]:
+    """Add ``<col>__t<i>`` SVD feature columns for each fitted text column (raw kept)."""
+    out = dict(columns)
+    for col, st in states.items():
+        if col not in columns:
+            continue
+        feats = text_svd_transform(list(columns[col]), st)
+        for i in range(feats.shape[1]):
+            out[f"{col}__t{i}"] = feats[:, i]
+    return out

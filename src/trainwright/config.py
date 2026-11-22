@@ -49,6 +49,16 @@ class DataConfig(_Strict):
         None, description="Rows sharing a group never straddle splits."
     )
     time_column: str | None = Field(None, description="Split chronologically on this column.")
+    text_features: list[str] = Field(
+        default_factory=list,
+        description="Free-text columns in a table, turned into 32 TF-IDF+SVD numeric features each "
+        "(fitted without labels; reproduced by the runtime). Filled by `profile`.",
+    )
+    date_columns: dict[str, str] = Field(
+        default_factory=dict,
+        description="Date/time text columns -> strptime format ('iso' for ISO 8601), expanded into "
+        "numeric year/month/day/weekday/hour/day-of-year/timestamp features. Filled by `profile`.",
+    )
     corrections: str | None = Field(
         None, description="CSV (id,label) of label fixes applied on load; see `trainwright review`."
     )
@@ -133,6 +143,12 @@ class OptimConfig(_Strict):
 
 class TrainConfig(_Strict):
     max_epochs: int = Field(50, ge=1)
+    min_steps: int = Field(
+        0,
+        ge=0,
+        description="Raise max_epochs (and patience by the same factor) until training gets at least "
+        "this many optimiser steps. Small datasets otherwise get only a few hundred steps.",
+    )
     batch_size: int = Field(256, ge=1)
     patience: int | None = Field(
         10, description="Early-stopping patience in epochs (None disables)."
@@ -190,15 +206,19 @@ class ExperimentConfig(_Strict):
 # --------------------------------------------------------------------------- defaults
 
 
+MIN_STEPS = 2000
+
+
 def default_experiment(project: ProjectConfig) -> ExperimentConfig:
     """Strong, boring defaults per modality. These are where every project starts."""
     if project.modality == "tabular":
         return ExperimentConfig(
             model=ModelConfig(
-                name="tabular_mlp", params={"hidden": 256, "depth": 3, "dropout": 0.1}
+                name="tabular_mlp",
+                params={"hidden": 256, "depth": 3, "dropout": 0.1, "num_embedding": "periodic"},
             ),
             optim=OptimConfig(lr=1e-3, weight_decay=1e-5, scheduler="cosine", warmup_epochs=1),
-            train=TrainConfig(max_epochs=100, batch_size=256, patience=15),
+            train=TrainConfig(max_epochs=100, batch_size=256, patience=15, min_steps=MIN_STEPS),
             preprocess=PreprocessConfig(numeric="quantile"),
         )
     if project.modality == "image":

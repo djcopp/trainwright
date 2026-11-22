@@ -1,0 +1,166 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" width="1000" height="700" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="1" stop-color="#eef2f7"/>
+    </linearGradient>
+  </defs>
+
+  <!-- canvas -->
+  <rect x="0" y="0" width="1000" height="700" rx="18" fill="url(#bg)"/>
+
+  <!-- title -->
+  <text x="40" y="44" font-size="22" font-weight="700" fill="#0f172a">How trainwright trains a model</text>
+  <text x="40" y="68" font-size="13.5" fill="#475569">One time-boxed command runs the search; the agent (or you) spends its effort where judgement matters.</text>
+
+  <!-- agent band -->
+  <rect x="40" y="86" width="920" height="46" rx="12" fill="#ffffff" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <circle cx="66" cy="109" r="11" fill="#ede9fe"/>
+  <text x="66" y="113.5" font-size="12" font-weight="700" fill="#6d28d9" text-anchor="middle">AI</text>
+  <text x="88" y="105" font-size="13" font-weight="700" fill="#5b21b6">Agent's job</text>
+  <text x="88" y="122" font-size="12.5" fill="#475569">read the profile and data · pick the deployment scenario · fix leaks · write features.py · rerun auto · judge if it ships</text>
+
+  <!-- row tints -->
+  <rect x="24" y="150" width="952" height="152" rx="14" fill="#e0f2fe" opacity="0.55"/>
+  <rect x="24" y="314" width="952" height="152" rx="14" fill="#dcfce7" opacity="0.55"/>
+  <rect x="24" y="478" width="952" height="152" rx="14" fill="#fef3c7" opacity="0.6"/>
+
+  <!-- row labels -->
+  <g font-size="11.5" font-weight="700" letter-spacing="0.6">
+    <rect x="40" y="158" width="118" height="22" rx="11" fill="#0369a1"/>
+    <text x="99" y="173" fill="#ffffff" text-anchor="middle">1 · UNDERSTAND</text>
+    <rect x="40" y="322" width="214" height="22" rx="11" fill="#15803d"/>
+    <text x="147" y="337" fill="#ffffff" text-anchor="middle">2 · SEARCH  (auto --budget 20m)</text>
+    <rect x="40" y="486" width="76" height="22" rx="11" fill="#b45309"/>
+    <text x="78" y="501" fill="#ffffff" text-anchor="middle">3 · SHIP</text>
+  </g>
+
+  <!-- ===== row 1: left to right ===== -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="188" width="200" height="104" rx="12" fill="#ffffff" stroke="#bae6fd"/>
+    <rect x="280" y="188" width="200" height="104" rx="12" fill="#ffffff" stroke="#bae6fd"/>
+    <rect x="520" y="188" width="200" height="104" rx="12" fill="#ffffff" stroke="#bae6fd"/>
+    <rect x="760" y="188" width="200" height="104" rx="12" fill="#ffffff" stroke="#bae6fd"/>
+  </g>
+  <g font-size="12" fill="#475569">
+    <text x="56" y="214" font-size="15" font-weight="700" fill="#0c4a6e">Data</text>
+    <text x="56" y="236">CSV / Parquet table</text>
+    <text x="56" y="253">image folders</text>
+    <text x="56" y="270">text with labels</text>
+
+    <text x="296" y="214" font-size="15" font-weight="700" fill="#0c4a6e">profile</text>
+    <text x="296" y="236">leaks (incl. sum-of-columns)</text>
+    <text x="296" y="253">duplicates · entity keys</text>
+    <text x="296" y="270">dates &amp; free text → features</text>
+
+    <text x="536" y="214" font-size="15" font-weight="700" fill="#0c4a6e">frozen split</text>
+    <text x="536" y="236">duplicate / group aware</text>
+    <text x="536" y="253">train · val for selection</text>
+    <text x="536" y="270">test sealed until the end</text>
+
+    <text x="776" y="214" font-size="15" font-weight="700" fill="#0c4a6e">baselines</text>
+    <text x="776" y="236">dummy · linear</text>
+    <text x="776" y="253">gradient boosting</text>
+    <text x="776" y="270">TF-IDF / pixel models</text>
+  </g>
+  <g stroke="#64748b" stroke-width="1.8" fill="none" marker-end="url(#arrow)">
+    <line x1="242" y1="240" x2="276" y2="240"/>
+    <line x1="482" y1="240" x2="516" y2="240"/>
+    <line x1="722" y1="240" x2="756" y2="240"/>
+    <!-- down to row 2 on the right -->
+    <path d="M860,294 L860,350"/>
+  </g>
+
+  <!-- ===== row 2: right to left ===== -->
+  <g filter="url(#shadow)">
+    <rect x="760" y="352" width="200" height="104" rx="12" fill="#ffffff" stroke="#bbf7d0"/>
+    <rect x="520" y="352" width="200" height="104" rx="12" fill="#ffffff" stroke="#bbf7d0"/>
+    <rect x="280" y="352" width="200" height="104" rx="12" fill="#ffffff" stroke="#bbf7d0"/>
+    <rect x="40" y="352" width="200" height="104" rx="12" fill="#ffffff" stroke="#bbf7d0"/>
+  </g>
+  <g font-size="12" fill="#475569">
+    <text x="776" y="378" font-size="15" font-weight="700" fill="#14532d">recipe ladder</text>
+    <text x="776" y="400">tables: MLP + periodic, tune</text>
+    <text x="776" y="417">images: DINOv2 probes, CNN</text>
+    <text x="776" y="434">text: bge-small, roberta-base</text>
+
+    <text x="536" y="378" font-size="15" font-weight="700" fill="#14532d">bag / seeds</text>
+    <text x="536" y="400">5-fold CV bag of the leader</text>
+    <text x="536" y="417">scored out-of-fold</text>
+    <text x="536" y="434">(seed replicas otherwise)</text>
+
+    <text x="296" y="378" font-size="15" font-weight="700" fill="#14532d">greedy ensemble</text>
+    <text x="296" y="400">Caruana selection</text>
+    <text x="296" y="417">on val log-loss</text>
+    <text x="296" y="434">ties → better calibrated</text>
+
+    <text x="56" y="378" font-size="15" font-weight="700" fill="#14532d">finalize</text>
+    <text x="56" y="400">refit the winner</text>
+    <text x="56" y="417">on train + val</text>
+    <text x="56" y="434">served by predict</text>
+  </g>
+  <g stroke="#64748b" stroke-width="1.8" fill="none" marker-end="url(#arrow)">
+    <line x1="758" y1="404" x2="724" y2="404"/>
+    <line x1="518" y1="404" x2="484" y2="404"/>
+    <line x1="278" y1="404" x2="244" y2="404"/>
+    <!-- down to row 3 on the left -->
+    <path d="M140,458 L140,514"/>
+  </g>
+
+  <!-- ===== row 3: left to right ===== -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="516" width="200" height="104" rx="12" fill="#ffffff" stroke="#fde68a"/>
+    <rect x="280" y="516" width="200" height="104" rx="12" fill="#ffffff" stroke="#fde68a"/>
+    <rect x="520" y="516" width="200" height="104" rx="12" fill="#ffffff" stroke="#fde68a"/>
+    <rect x="760" y="516" width="200" height="104" rx="12" fill="#ffffff" stroke="#fde68a"/>
+  </g>
+  <g font-size="12" fill="#475569">
+    <text x="56" y="542" font-size="15" font-weight="700" fill="#78350f">evaluate test once</text>
+    <text x="56" y="564">one honest number</text>
+    <text x="56" y="581">logged in a test ledger</text>
+    <text x="56" y="598">re-reads are flagged</text>
+
+    <text x="296" y="542" font-size="15" font-weight="700" fill="#78350f">export</text>
+    <text x="296" y="564">ONNX bundle, parity-checked</text>
+    <text x="296" y="581">FastAPI server · Dockerfile</text>
+    <text x="296" y="598">model card</text>
+
+    <text x="536" y="542" font-size="15" font-weight="700" fill="#78350f">benchmark</text>
+    <text x="536" y="564">latency · throughput</text>
+    <text x="536" y="581">$ per 1M predictions</text>
+    <text x="536" y="598">compared with the LLM call</text>
+
+    <text x="776" y="542" font-size="15" font-weight="700" fill="#78350f">predict / serve</text>
+    <text x="776" y="564">numpy + onnxruntime</text>
+    <text x="776" y="581">no torch at runtime</text>
+    <text x="776" y="598">CPU or GPU</text>
+  </g>
+  <g stroke="#64748b" stroke-width="1.8" fill="none" marker-end="url(#arrow)">
+    <line x1="242" y1="568" x2="276" y2="568"/>
+    <line x1="482" y1="568" x2="516" y2="568"/>
+    <line x1="722" y1="568" x2="756" y2="568"/>
+  </g>
+
+  <!-- "auto" badges on the steps the autopilot runs -->
+  <g font-size="10.5" font-weight="700" fill="#ffffff" text-anchor="middle">
+    <rect x="432" y="194" width="40" height="17" rx="8.5" fill="#16a34a"/><text x="452" y="206.5">auto</text>
+    <rect x="672" y="194" width="40" height="17" rx="8.5" fill="#16a34a"/><text x="692" y="206.5">auto</text>
+    <rect x="912" y="194" width="40" height="17" rx="8.5" fill="#16a34a"/><text x="932" y="206.5">auto</text>
+    <rect x="912" y="358" width="40" height="17" rx="8.5" fill="#16a34a"/><text x="932" y="370.5">auto</text>
+    <rect x="672" y="358" width="40" height="17" rx="8.5" fill="#16a34a"/><text x="692" y="370.5">auto</text>
+    <rect x="432" y="358" width="40" height="17" rx="8.5" fill="#16a34a"/><text x="452" y="370.5">auto</text>
+    <rect x="192" y="358" width="40" height="17" rx="8.5" fill="#16a34a"/><text x="212" y="370.5">auto</text>
+  </g>
+
+  <!-- footer legend -->
+  <rect x="40" y="648" width="40" height="17" rx="8.5" fill="#16a34a"/>
+  <text x="60" y="660.5" font-size="10.5" font-weight="700" fill="#ffffff" text-anchor="middle">auto</text>
+  <text x="90" y="661" font-size="12.5" fill="#475569">step run by <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#0f172a">trainwright auto</tspan> (skipped when already up to date; <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#0f172a">--background</tspan> + <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#0f172a">wait</tspan> for long budgets).</text>
+  <text x="90" y="681" font-size="12.5" fill="#475569">Each step is also its own command: profile · split · baseline · train · tune · bag · ensemble · finalize · export.</text>
+</svg>

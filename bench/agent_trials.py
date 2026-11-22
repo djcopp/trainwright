@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 AUTONOMY = (
     " Work fully autonomously: there is nobody to answer questions, so make reasonable decisions "
-    "yourself. You have a time limit of about 40 minutes, so keep individual commands under ~8 minutes."
+    "yourself. You have a time limit of about {minutes} minutes, so keep individual commands under ~8 minutes."
 )
 
 TASKS = {
@@ -81,16 +81,127 @@ TASKS = {
         "it does and roughly what it would cost to run. Finally classify every image in holdout/ "
         "and write predictions.csv with columns `filename,prediction`.",
     },
+    # ---- round 8+: wider coverage (bench/fetch_tasks.py)
+    "beans": {
+        "kind": "image",
+        "source": "beans/images",
+        "file": "images",
+        "target": None,
+        "task": "classification",
+        "prompt": "Our field app sends photos of bean plant leaves to a vision LLM to flag disease, and "
+        "farmers in low-connectivity areas need something that runs on a cheap phone or edge box. "
+        "Labelled photos are in images/ (one folder per class). Train a small model for this, tell me "
+        "how well it works and whether it is good enough to ship. Finally classify every image in "
+        "holdout/ and write predictions.csv with columns `filename,prediction`.",
+    },
+    "eurosat": {
+        "kind": "image",
+        "source": "eurosat/images",
+        "file": "images",
+        "target": None,
+        "task": "classification",
+        "prompt": "images/ has small satellite image tiles sorted into land-use classes (one folder per "
+        "class). We want to tag millions of tiles, which is far too expensive with an LLM. Train a "
+        "model for it and tell me how accurate it is and what throughput/cost to expect. Finally "
+        "classify every image in holdout/ and write predictions.csv with columns `filename,prediction`.",
+    },
+    "tweet_irony": {
+        "kind": "text",
+        "source": "tweet_irony/tweets.csv",
+        "file": "tweets.csv",
+        "target": "irony",
+        "task": "classification",
+        "prompt": "tweets.csv has tweets labelled as ironic or not (`irony`). Our moderation pipeline asks "
+        "an LLM about every tweet. Can a small model do this instead? Train one, tell me how good it is. "
+        "Finally write predictions for holdout.csv (column `tweet`) to predictions.csv: one row per "
+        "holdout row, same order, column `prediction`.",
+    },
+    "app_reviews": {
+        "kind": "text",
+        "source": "app_reviews/reviews.csv",
+        "file": "reviews.csv",
+        "target": "star",
+        "task": "regression",
+        "prompt": "reviews.csv has Android app reviews with their star rating (`star`, 1-5). We want to "
+        "estimate a star rating for feedback that arrives without one (support emails, tweets). Train "
+        "a model that predicts the rating as a number and tell me how accurate it is. Finally write "
+        "predictions for holdout.csv (same columns, no `star`) to predictions.csv: one row per holdout "
+        "row, same order, numeric column `prediction`.",
+    },
+    "mercedes": {
+        "kind": "tabular",
+        "source": "mercedes/mercedes.csv",
+        "file": "mercedes.csv",
+        "target": "y",
+        "task": "regression",
+        "prompt": "mercedes.csv describes car configurations (anonymised columns) and `y`, the time in "
+        "seconds the car spent on the test bench. Build a model that predicts `y` and tell me how good "
+        "it is. Finally write predictions for holdout.csv (same columns, no `y`) to predictions.csv: one "
+        "row per holdout row, same order, column `prediction`.",
+    },
+    "bike_sharing": {
+        "kind": "tabular",
+        "source": "bike_sharing/bike_sharing.csv",
+        "file": "bike_sharing.csv",
+        "target": "count",
+        "task": "regression",
+        "prompt": "bike_sharing.csv has hourly bike-rental counts (`count`) with weather and calendar "
+        "information. Explore it, build a model that predicts the hourly count and tell me how accurate "
+        "it is. Finally write predictions for holdout.csv (same columns, no `count`) to predictions.csv: "
+        "one row per holdout row, same order, column `prediction`.",
+    },
+    "miniboone": {
+        "kind": "tabular",
+        "source": "miniboone/miniboone.csv",
+        "file": "miniboone.csv",
+        "target": "signal",
+        "task": "classification",
+        "prompt": "miniboone.csv has particle-detector measurements; `signal` says whether an event is a "
+        "neutrino signal (True) or background (False). Train the best classifier you can and tell me how "
+        "good it is. Finally write predictions for holdout.csv (same columns, no `signal`) to "
+        "predictions.csv: one row per holdout row, same order, column `prediction` (True/False).",
+    },
+    "wine": {
+        "kind": "tabular",
+        "source": "wine/wine.csv",
+        "file": "wine.csv",
+        "target": "variety",
+        "task": "classification",
+        "prompt": "wine.csv has wine reviews: country, province, price, points and the taster's description. "
+        "We currently ask an LLM to guess the grape `variety` for listings that don't state it. Train a "
+        "model that predicts the variety and tell me how good it is and whether it could replace the "
+        "LLM. Finally write predictions for holdout.csv (same columns, no `variety`) to predictions.csv: "
+        "one row per holdout row, same order, column `prediction`.",
+    },
+    "telco_churn": {
+        "kind": "tabular",
+        "source": "telco_churn/telco_churn.csv",
+        "file": "telco_churn.csv",
+        "target": "Churn",
+        "task": "classification",
+        "prompt": "telco_churn.csv is our customer table; `Churn` says whether the customer left. Do some "
+        "feature exploration and train a model to predict churn, and tell me how good it is. Finally "
+        "write predictions for holdout.csv (same columns, no `Churn`) to predictions.csv: one row per "
+        "holdout row, same order, column `prediction` (Yes/No).",
+    },
 }
 
 
 # --------------------------------------------------------------------------- prepare
 
 
-def prepare(datasets: Path, out: Path, hidden_frac: float = 0.15, seed: int = 0) -> None:
+def prepare(
+    datasets: Path,
+    out: Path,
+    hidden_frac: float = 0.15,
+    seed: int = 0,
+    only: list[str] | None = None,
+) -> None:
     rng = np.random.default_rng(seed)
     out.mkdir(parents=True, exist_ok=True)
     for name, spec in TASKS.items():
+        if only and name not in only:
+            continue
         tdir = out / name
         if tdir.exists():
             shutil.rmtree(tdir)
@@ -200,7 +311,7 @@ def run_trial(
     which = subprocess.run(
         ["which", "trainwright", "python"], env=env, capture_output=True, text=True
     ).stdout
-    prompt = spec["prompt"] + AUTONOMY
+    prompt = spec["prompt"] + AUTONOMY.format(minutes=int(max(10, timeout_min - 5)))
     cmd = [
         "claude",
         "-p",
@@ -462,15 +573,17 @@ def batch(
     max_trials: int,
     model: str,
     timeout_min: float,
+    only: list[str] | None = None,
+    prefix: str = "b",
 ) -> None:
     """Resumable: runs every (task, condition, rep) without a .meta.json, at most max_trials this call."""
     jobs = []
     for tdir in sorted(tasks.iterdir()):
-        if not (tdir / "task.json").exists():
+        if not (tdir / "task.json").exists() or (only and tdir.name not in only):
             continue
         for rep in range(1, reps + 1):
             for cond in conditions:
-                tag = f"b{rep}"
+                tag = f"{prefix}{rep}"
                 if not (trials / f"{tdir.name}-{cond}-{tag}.meta.json").exists():
                     jobs.append((tdir.name, cond, tag))
     jobs = jobs[:max_trials]
@@ -500,9 +613,12 @@ def main() -> None:
     )
     b.add_argument("--model", default="sonnet")
     b.add_argument("--timeout-min", type=float, default=30)
+    b.add_argument("--only", nargs="*", default=None, help="task names to include")
+    b.add_argument("--prefix", default="b", help="trial tag prefix, e.g. r8-")
     p = sub.add_parser("prepare")
     p.add_argument("--datasets", type=Path, default=ROOT / "scratch" / "datasets")
     p.add_argument("--out", type=Path, default=ROOT / "scratch" / "tasks")
+    p.add_argument("--only", nargs="*", default=None)
     r = sub.add_parser("run")
     r.add_argument("--task", required=True, choices=list(TASKS))
     r.add_argument("--condition", required=True, choices=["control", "trainwright"])
@@ -538,9 +654,11 @@ def main() -> None:
             a.max_trials,
             a.model,
             a.timeout_min,
+            a.only,
+            a.prefix,
         )
     elif a.cmd == "prepare":
-        prepare(a.datasets, a.out)
+        prepare(a.datasets, a.out, only=a.only)
     elif a.cmd == "run":
         a.trials.mkdir(parents=True, exist_ok=True)
         run_trial(a.tasks, a.trials, a.task, a.condition, a.model, a.timeout_min, a.tag)

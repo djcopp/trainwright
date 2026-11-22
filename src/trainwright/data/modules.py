@@ -188,7 +188,9 @@ class ProjectDataModule(DataModule):
                     lens = probe.token_lengths(sample) if sample else [128]
                     p99 = float(np.percentile(lens, 99))
                     max_len = int(min(512, max(32, 16 * math.ceil(p99 * 1.1 / 16))))
-                    self.log(f"text max_length auto-set to {max_len} tokens (p99 of train = {p99:.0f})")
+                    self.log(
+                        f"text max_length auto-set to {max_len} tokens (p99 of train = {p99:.0f})"
+                    )
                 self.pre = HFTokenizer(encoder, max_len).fit([])
             else:
                 self.pre = TextTokenizer(
@@ -439,7 +441,10 @@ class ImageLoader:
             if isinstance(item, Exception):
                 raise item
             imgs, idx = item
-            x = torch.from_numpy(imgs).to(self.device, non_blocking=True).float().div_(255.0)
+            host = torch.from_numpy(imgs)
+            if str(self.device).startswith("cuda"):
+                host = host.pin_memory()  # lets the host->GPU copy overlap with compute
+            x = host.to(self.device, non_blocking=True).float().div_(255.0)
             if self.augment != "none":
                 x = augment_images(x, self.augment, self.hflip, self._gen)
             yield {"image": x, "y": self.y[torch.from_numpy(idx)].to(self.device)}
