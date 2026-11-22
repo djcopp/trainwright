@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 
@@ -38,6 +39,7 @@ class ModelInfo:
     when_to_use: str = ""
     defaults: dict[str, Any] = field(default_factory=dict)
     recipe: dict[str, Any] = field(default_factory=dict)
+    tasks: tuple[str, ...] = ("classification", "regression")
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -47,6 +49,7 @@ class ModelInfo:
             "when_to_use": self.when_to_use,
             "params": self.defaults,
             "recipe": self.recipe,
+            "tasks": list(self.tasks),
         }
 
 
@@ -59,6 +62,7 @@ def register_model(
     description: str = "",
     when_to_use: str = "",
     recipe: dict[str, Any] | None = None,
+    tasks: tuple[str, ...] = ("classification", "regression"),
 ) -> Callable[[Any], Any]:
     """Register an architecture. ``recipe`` holds dotted overrides (e.g. ``{"optim.lr": 3e-5}``)
     applied automatically whenever an experiment switches to this model."""
@@ -71,7 +75,7 @@ def register_model(
             if k != "spec" and v.default is not inspect.Parameter.empty
         }
         _REGISTRY[name] = ModelInfo(
-            name, modality, obj, description, when_to_use, defaults, dict(recipe or {})
+            name, modality, obj, description, when_to_use, defaults, dict(recipe or {}), tasks
         )
         return obj
 
@@ -96,6 +100,9 @@ def build_model(name: str, spec: dict[str, Any], params: dict[str, Any] | None =
         raise ValueError(
             f"Model {name!r} is for {info.modality} data but the project is {spec['modality']}"
         )
+    if spec.get("task") and spec["task"] not in info.tasks:
+        fits = sorted(n for n, i in _REGISTRY.items() if spec["task"] in i.tasks)
+        raise ValueError(f"Model {name!r} can't do {spec['task']}; models that can: {fits}")
     return info.builder(spec, **params)
 
 
@@ -605,3 +612,109 @@ class ImageProbe(ImagePretrained):
         super().__init__(
             spec, backbone=backbone, pretrained=True, dropout=dropout, freeze_backbone=True
         )
+
+
+# --------------------------------------------------------------------------- segmentation
+
+_SEG_ARCHS = {
+    # name: (torchvision.models.segmentation builder, weights enum)
+    "lraspp_mobilenet_v3_large": ("lraspp_mobilenet_v3_large", "LRASPP_MobileNet_V3_Large_Weights"),
+    "deeplabv3_mobilenet_v3_large": (
+        "deeplabv3_mobilenet_v3_large",
+        "DeepLabV3_MobileNet_V3_Large_Weights",
+    ),
+    "deeplabv3_resnet50": ("deeplabv3_resnet50", "DeepLabV3_ResNet50_Weights"),
+}
+
+
+@register_model(
+    "image_segmenter",
+    modality="image",
+    tasks=("segmentation",),
+    description="Pretrained torchvision segmentation network with a new per-pixel head, fine-tuned "
+    "end-to-end (lower backbone LR).",
+    when_to_use="Default for segmentation. lraspp_mobilenet_v3_large is fast and serves cheaply on "
+    "CPU; deeplabv3_resnet50 is slower and usually more accurate.",
+)
+class ImageSegmenter(nn.Module):
+    def __init__(
+        self, spec: dict[str, Any], arch: str = "lraspp_mobilenet_v3_large", pretrained: bool = True
+    ):
+        super().__init__()
+        try:
+            import torchvision.models.segmentation as tvs
+        except ImportError as e:  # pragma: no cover
+            raise ImportError(
+                "segmentation needs torchvision: `uv add 'trainwright[vision]'`"
+            ) from e
+        if arch not in _SEG_ARCHS:
+            raise ValueError(f"arch must be one of {sorted(_SEG_ARCHS)}")
+        fn, weights_name = _SEG_ARCHS[arch]
+        weights = getattr(tvs, weights_name).DEFAULT if pretrained else None
+        kw: dict[str, Any] = {"weights": weights}
+        if weights is None:
+            kw["weights_backbone"] = None
+        net = getattr(tvs, fn)(**kw)
+        k = int(spec.get("n_outputs", 2))
+        if arch.startswith("lraspp"):
+            head = net.classifier
+            head.low_classifier = nn.Conv2d(head.low_classifier.in_channels, k, 1)
+            head.high_classifier = nn.Conv2d(head.high_classifier.in_channels, k, 1)
+        else:
+            last = net.classifier[-1]
+            net.classifier[-1] = nn.Conv2d(last.in_channels, k, 1)
+            net.aux_classifier = None
+        self.net = net
+        self.backbone = net.backbone
+        self.pretrained_backbone = pretrained
+        self.normalize = Normalize(IMAGENET_MEAN, IMAGENET_STD)
+
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        return self.net(self.normalize(image))["out"]
+
+
+@register_model(
+    "seg_probe",
+    modality="image",
+    tasks=("segmentation",),
+    description="Frozen DINOv2 patch features + a linear per-patch head, upsampled to the image. "
+    "Only the head trains.",
+    when_to_use="Strong first try when labels are few or the domain is far from everyday photos; "
+    "compare with image_segmenter, which fine-tunes but sees coarser features.",
+    recipe={
+        "optim.lr": 1e-3,
+        "optim.weight_decay": 1e-4,
+        "train.max_epochs": 40,
+        "preprocess.image_size": 448,
+    },
+)
+class SegProbe(nn.Module):
+    def __init__(self, spec: dict[str, Any], backbone: str = "dinov2_small"):
+        super().__init__()
+        if backbone not in _HF_BACKBONES:
+            raise ValueError(f"backbone must be one of {sorted(_HF_BACKBONES)}")
+        from transformers import AutoModel
+
+        self.encoder = AutoModel.from_pretrained(_HF_BACKBONES[backbone])
+        for p in self.encoder.parameters():
+            p.requires_grad_(False)
+        d = int(self.encoder.config.hidden_size)
+        self.patch = int(self.encoder.config.patch_size)
+        self.head = nn.Sequential(nn.BatchNorm2d(d), nn.Conv2d(d, int(spec.get("n_outputs", 2)), 1))
+        self.normalize = Normalize(IMAGENET_MEAN, IMAGENET_STD)
+
+    def train(self, mode: bool = True) -> SegProbe:
+        super().train(mode)
+        self.encoder.eval()
+        return self
+
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        h, w = image.shape[-2:]
+        gh, gw = h // self.patch, w // self.patch
+        x = self.normalize(image)[..., : gh * self.patch, : gw * self.patch]
+        with torch.no_grad():
+            tok = self.encoder(pixel_values=x).last_hidden_state[:, 1:]
+        tok = tok[:, -gh * gw :]  # drop register tokens if the backbone has any
+        fmap = tok.transpose(1, 2).reshape(tok.shape[0], -1, gh, gw)
+        logits = self.head(fmap.float())
+        return F.interpolate(logits, size=(h, w), mode="bilinear", align_corners=False)

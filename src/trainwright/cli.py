@@ -266,6 +266,13 @@ def _write_agent_files(root: Path, global_skill: bool = False) -> list[str]:
     return written
 
 
+def _rel_to(p: Path, root: Path) -> str:
+    try:
+        return str(p.relative_to(root))
+    except ValueError:
+        return str(p)
+
+
 @app.command()
 def init(
     data: Path = typer.Option(
@@ -277,6 +284,11 @@ def init(
     modality: str | None = typer.Option(None, help="tabular | image | text (inferred)."),
     text_column: str | None = typer.Option(None, help="Text column (text modality)."),
     image_column: str | None = typer.Option(None, help="Image path column (image manifest CSV)."),
+    masks: Path | None = typer.Option(
+        None,
+        help="Segmentation: folder of PNG masks (same file stem as each image; pixel = class "
+        "index, 255 = ignore). Sets task=segmentation.",
+    ),
     metric: str | None = typer.Option(None, help="Primary metric (recommended automatically)."),
     drop: list[str] = typer.Option([], help="Columns never to use as features (repeatable)."),
     group_column: str | None = typer.Option(None, help="Keep rows of a group in one split."),
@@ -301,7 +313,21 @@ def init(
     data_abs = data.resolve()
     if not data_abs.exists():
         raise CLIError(f"Data path {data} does not exist.")
-    inf = _infer_project(data_abs, target, text_column, image_column)
+    inf: dict[str, Any]
+    if masks is not None:
+        if not masks.resolve().is_dir():
+            raise CLIError(f"Mask folder {masks} does not exist.")
+        inf = {
+            "task": "segmentation",
+            "modality": "image",
+            "metric": "miou",
+            "mode": "max",
+            "why": "mean intersection-over-union: the standard segmentation metric",
+            "target": None,
+            "text_column": None,
+        }
+    else:
+        inf = _infer_project(data_abs, target, text_column, image_column)
     task = task or inf["task"]
     modality = modality or inf["modality"]
     if metric:
@@ -332,6 +358,7 @@ def init(
             target=inf["target"] if modality != "image" or image_column else None,
             text_column=text_column or inf["text_column"],
             image_column=image_column,
+            mask_path=_rel_to(masks.resolve(), root) if masks is not None else None,
             drop=list(drop),
             group_column=group_column,
             time_column=time_column,
@@ -463,6 +490,18 @@ def profile(
             f"target: {t['n_classes']} classes, imbalance {t['imbalance_ratio']}:1, counts {dict(top)}"
             + (" ..." if t["n_classes"] > 8 else "")
         )
+    elif cfg.task == "segmentation":
+        top = list(t["pixel_share"].items())[:8]
+        lines.append(
+            f"masks: {t['n_classes']} classes; pixel share {dict(top)}"
+            + (" ..." if t["n_classes"] > 8 else "")
+            + f"; ignored {t['ignored_share']:.1%}"
+        )
+        if t["mask_image_size_mismatch"]:
+            lines.append(
+                f"{t['mask_image_size_mismatch']} of {t['sampled']} sampled masks differ in size "
+                "from their image (they are resized to match; check they line up)"
+            )
     else:
         lines.append(
             f"target: mean {t['mean']:.4g} std {t['std']:.4g} range [{t['min']:.4g}, {t['max']:.4g}] skew {t['skew']:.2f}"
@@ -1149,8 +1188,19 @@ def errors(
                 f"{c['true']} -> {c['predicted']} ({c['count']})" for c in res["confusions"][:4]
             )
         )
+    if res.get("per_class_iou"):
+        lines.append(
+            "weakest classes (IoU, share of pixels): "
+            + "; ".join(
+                f"{c['class']} {c['iou']:.2f} ({c['pixel_share']:.1%})"
+                for c in res["per_class_iou"][:6]
+            )
+        )
     lines.append("worst rows:")
     for r in res["worst_rows"][:5]:
+        if "image_miou" in r:
+            lines.append(f"  {r['id']}: image mIoU {r['image_miou']:.3f}  {r.get('path') or ''}")
+            continue
         what = (
             f"label {r['label']}, predicted {r['predicted']} ({r['confidence']:.2f})"
             if "label" in r
@@ -1602,6 +1652,23 @@ def predict(
     else:
         items = [line for line in input_.read_text().splitlines() if line.strip()]
         ids = [str(i) for i in range(len(items))]
+    if pred.task == "segmentation" and out_path is not None:
+        from PIL import Image
+
+        out_path.mkdir(parents=True, exist_ok=True)
+        n = 0
+        for i in range(0, len(items), 16):
+            for k, m in zip(ids[i : i + 16], pred.predict_masks(items[i : i + 16])):
+                dest = out_path / Path(k).with_suffix(".png")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                Image.fromarray(m).save(dest)
+                n += 1
+        emit(
+            {"path": str(out_path), "n": n, "model": target},
+            f"wrote {n} masks (PNG, pixel = class index) to {_rel(out_path)}/ (model {target})",
+            warnings=warnings,
+        )
+        return
     if out_path is None:
         out = pred.predict(items[:limit])
         emit(out, "\n".join(json.dumps(o) for o in out), warnings=warnings)

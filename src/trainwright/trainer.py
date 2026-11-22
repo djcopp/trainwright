@@ -269,7 +269,7 @@ class Trainer:
                 losses.append(loss.detach())
                 if self.eval_train_metrics:
                     outs.append(step["outputs"].float().cpu())
-                    ys.append(batch["y"].cpu())
+                    ys.append(step.get("y", batch["y"]).cpu())
                 if self.time_budget_s and time.time() - t0 > self.time_budget_s:
                     self.stop(f"time budget of {fmt_seconds(self.time_budget_s)} reached")
                     break
@@ -382,7 +382,7 @@ class Trainer:
             with ctx:
                 step = task.validation_step(batch)
             outs.append(step["outputs"].float().cpu())
-            ys.append(batch["y"].cpu())
+            ys.append(step.get("y", batch["y"]).cpu())
             losses.append(float(step["loss"].item()))
             ns.append(len(batch["y"]))
         if not outs:

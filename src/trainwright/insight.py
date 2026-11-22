@@ -369,6 +369,8 @@ def error_report(
 ) -> dict[str, Any]:
     """Where the val loss concentrates, plus measured candidate features (tabular)."""
     cfg = project.config
+    if cfg.task == "segmentation":
+        return _segmentation_report(project, ref or "best")
     src_path = project.root / FILENAME
     source = src_path.read_text() if src_path.exists() else None
     records = get_records(project)
@@ -560,3 +562,68 @@ def _rel(project: Project, p: Path) -> str:
         return str(p.relative_to(project.root))
     except ValueError:
         return str(p)
+
+
+def _segmentation_report(project: Project, ref: str) -> dict[str, Any]:
+    """Per-class IoU, the most confused class pairs and the worst images (per-image mIoU)."""
+    import pandas as pd
+
+    from .ensemble import member_outputs
+    from .leaderboard import resolve_ref
+    from .metrics import per_class_iou, segmentation_metrics
+    from .segmentation import image_miou
+
+    cfg = project.config
+    run = resolve_ref(project, ref)
+    rows, _ = member_outputs(project, run, "val")
+    records = get_records(project)
+    split = require_split(project, records)
+    val = records.subset(split["val"])
+    classes = list(split["classes"])
+    k = len(classes)
+    cm = np.asarray(rows).reshape(-1, k, k).sum(0)
+    off = cm.copy()
+    np.fill_diagonal(off, 0)
+    pairs = []
+    for f in np.argsort(off, axis=None)[::-1][:8]:
+        i, j = np.unravel_index(f, off.shape)
+        if off[i, j] == 0:
+            break
+        pairs.append(
+            {
+                "true": classes[i],
+                "predicted": classes[j],
+                "pixels": int(off[i, j]),
+                "share_of_true": round(float(off[i, j] / max(cm[i].sum(), 1)), 4),
+            }
+        )
+    per_img = image_miou(rows, k)
+    paths = [_rel(project, Path(p)) for p in (val.paths or [])]
+    order = np.argsort(per_img)
+    worst = [
+        {
+            "id": val.ids[i],
+            "image_miou": round(float(per_img[i]), 4),
+            "path": paths[i] if paths else None,
+        }
+        for i in order[:10]
+    ]
+    tab = pd.DataFrame({"id": val.ids, "image_miou": per_img, "path": paths or None})
+    rows_path = project.state_dir / "val_errors.csv"
+    tab.sort_values("image_miou").to_csv(rows_path, index=False)
+    res: dict[str, Any] = {
+        "source": f"run {run.id}",
+        "metric": cfg.metric,
+        "score": round(float(segmentation_metrics(rows, k)[cfg.metric]), 6),
+        "n_val": len(per_img),
+        "per_class_iou": per_class_iou(rows, classes)[:12],
+        "confusions": [
+            {"true": c["true"], "predicted": c["predicted"], "count": c["pixels"]} for c in pairs
+        ],
+        "pixel_confusions": pairs,
+        "worst_rows": worst,
+        "rows_csv": str(rows_path),
+        "candidates": [],
+    }
+    write_json(project.state_dir / "errors.json", res)
+    return res

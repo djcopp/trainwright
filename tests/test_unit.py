@@ -371,14 +371,17 @@ def test_every_registered_model_builds_and_runs():
             {"tokens": torch.randint(1, 50, (2, 8))},
         ),
     }
-    offline = {"image_pretrained": {"pretrained": False}}
+    offline = {"image_pretrained": {"pretrained": False}, "image_segmenter": {"pretrained": False}}
     for info in tw.list_models():
-        if info["name"] in ("text_pretrained", "tiny_test_model", "image_probe"):
+        if info["name"] in ("text_pretrained", "tiny_test_model", "image_probe", "seg_probe"):
             continue  # needs a hub download / registered by another test
         spec, batch = specs[info["modality"]]
+        seg = "segmentation" in info["tasks"]
+        spec = {**spec, "task": "segmentation"} if seg else spec
         m = tw.build_model(info["name"], spec, offline.get(info["name"], {})).eval()
         with torch.no_grad():
-            assert m(**batch).shape == (2, 2), info["name"]
+            want = (2, 2, 64, 64) if seg else (2, 2)
+            assert m(**batch).shape == want, info["name"]
 
 
 def test_mcp_server_exposes_lifecycle_tools():

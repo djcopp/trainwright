@@ -165,6 +165,17 @@ early-stopped gradient boosting on val ~3 times in 4.
    Text models train slowly on CPU/MPS: set `train.time_budget`, then `finalize` (it retrains, so budget for it).
 3. Need microsecond inference or no transformers → `model.name=text_bag` / `text_cnn`.
 
+**Segmentation** (`trainwright init --data images --masks masks`): one PNG mask per image with
+the same file stem, pixel value = class index, 255 = ignored. Selection is on mIoU.
+1. `profile` lists each class's pixel share. Rare classes dominate mIoU, so check them first.
+2. `auto` tries `seg_probe` (frozen DINOv2 + linear head), `image_segmenter` (LR-ASPP
+   MobileNetV3, fine-tuned) and DeepLabV3-ResNet50, and keeps the best.
+3. `trainwright errors best` lists the weakest classes, the most-confused class pairs and the
+   worst images. Look at those images next to their masks: label noise is common.
+4. Detail matters: try `-o preprocess.image_size=448` (or 512) on the leader.
+5. `trainwright predict <run> -i photos/ --out masks/` writes one PNG mask per photo at its
+   original size.
+
 ## Distilling an LLM
 
 If labels come from an LLM (or you create them with `trainwright label`), metrics measure

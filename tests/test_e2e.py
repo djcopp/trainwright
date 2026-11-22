@@ -573,3 +573,41 @@ def test_check_lists_what_is_missing_until_done(regression_project):
     done, items = status()
     assert done, items
     assert items["error analysis"] == "pass" and items["search"] == "pass"
+
+
+def test_segmentation_lifecycle(tmp_path):
+    from conftest import TW
+    from PIL import Image
+
+    rng = np.random.default_rng(6)
+    (tmp_path / "images").mkdir()
+    (tmp_path / "masks").mkdir()
+    for i in range(48):
+        img = (rng.random((40, 48, 3)) * 60 + 40).astype(np.uint8)
+        m = np.zeros((40, 48), np.uint8)
+        cy, cx, r = rng.integers(10, 30), rng.integers(10, 38), rng.integers(4, 9)
+        sel = (abs(np.arange(40)[:, None] - cy) < r) & (abs(np.arange(48)[None] - cx) < r)
+        img[sel], m[sel] = (220, 40, 40), 1
+        Image.fromarray(img).save(tmp_path / "images" / f"s{i:02d}.jpg")
+        Image.fromarray(m).save(tmp_path / "masks" / f"s{i:02d}.png")
+    tw = TW(tmp_path)
+    cfg = tw("init", "--data", "images", "--masks", "masks")["result"]["config"]
+    assert cfg["task"] == "segmentation" and cfg["metric"] == "miou"
+    prof = tw("profile")["result"]
+    assert prof["target"]["n_classes"] == 2 and prof["target"]["classes"] == ["0", "1"]
+    tw("split")
+    tw("baseline")
+    ov = ["-o", "model.params.pretrained=false", "-o", "preprocess.image_size=48"]
+    run = tw("train", *FAST, *ov, "-o", "train.max_epochs=2", "-H", "seg")["result"]
+    rid = run["run"]
+    assert 0 <= run["summary"]["val"]["miou"] <= 1
+    ev = tw("evaluate", rid)["result"]
+    assert ev["per_class_iou"] and ev["worst_examples"]
+    rep = tw("errors", rid)["result"]
+    assert rep["per_class_iou"] and rep["worst_rows"]
+    out = tw("predict", rid, "-i", "images", "--out", "pred", "--no-final")["result"]
+    assert out["n"] == 48
+    mask = np.asarray(Image.open(tmp_path / "pred" / "s00.png"))
+    assert mask.shape == (40, 48) and set(np.unique(mask)) <= {0, 1}
+    exp = tw("export", rid)["result"]
+    assert exp["parity_ok"]

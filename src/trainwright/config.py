@@ -20,7 +20,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-TaskType = Literal["classification", "regression"]
+TaskType = Literal["classification", "regression", "segmentation"]
 Modality = Literal["tabular", "image", "text"]
 
 
@@ -41,6 +41,15 @@ class DataConfig(_Strict):
     text_column: str | None = Field(None, description="Text column (text modality).")
     image_column: str | None = Field(
         None, description="Image path column for CSV manifests (image modality)."
+    )
+    mask_path: str | None = Field(
+        None,
+        description="Segmentation: folder of PNG masks, one per image with the same file stem; "
+        "pixel value = class index, 255 = ignore.",
+    )
+    classes: list[str] = Field(
+        default_factory=list,
+        description="Segmentation: class names in mask-value order (default: the values found).",
     )
     drop: list[str] = Field(
         default_factory=list, description="Columns never used as features (ids, leaks)."
@@ -220,6 +229,19 @@ def default_experiment(project: ProjectConfig) -> ExperimentConfig:
             optim=OptimConfig(lr=1e-3, weight_decay=1e-5, scheduler="cosine", warmup_epochs=1),
             train=TrainConfig(max_epochs=100, batch_size=256, patience=15, min_steps=MIN_STEPS),
             preprocess=PreprocessConfig(numeric="quantile"),
+        )
+    if project.task == "segmentation":
+        return ExperimentConfig(
+            model=ModelConfig(name="image_segmenter", params={"arch": "lraspp_mobilenet_v3_large"}),
+            optim=OptimConfig(
+                lr=1e-3,
+                weight_decay=1e-4,
+                scheduler="cosine",
+                warmup_epochs=1,
+                backbone_lr_mult=0.1,
+            ),
+            train=TrainConfig(max_epochs=40, batch_size=16, patience=8),
+            preprocess=PreprocessConfig(image_size=320, augment="light"),
         )
     if project.modality == "image":
         return ExperimentConfig(

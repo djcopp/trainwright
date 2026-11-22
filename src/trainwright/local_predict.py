@@ -110,7 +110,7 @@ def _classes(project: Project) -> list[str] | None:
 
     return (
         (load_split(project) or {}).get("classes")
-        if project.config.task == "classification"
+        if project.config.task in ("classification", "segmentation")
         else None
     )
 

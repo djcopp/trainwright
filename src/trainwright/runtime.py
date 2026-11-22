@@ -123,7 +123,30 @@ class Predictor:
             vals = self.target.decode(vals)
         return vals
 
+    def predict_masks(self, instances: list[Any]) -> list[np.ndarray]:
+        """Segmentation: one uint8 class-index mask per image, at the image's own size."""
+        from PIL import Image
+
+        logits = np.asarray(self.predict_raw(instances))
+        masks = []
+        for x, lg in zip(instances, logits):
+            src = _decode_image_input(x)
+            size = (src if isinstance(src, Image.Image) else Image.open(src)).size
+            m = Image.fromarray(lg.argmax(0).astype(np.uint8))
+            masks.append(np.asarray(m.resize(size, Image.Resampling.NEAREST)))
+        return masks
+
     def predict(self, instances: list[Any], top_k: int = 3) -> list[dict[str, Any]]:
+        if self.task == "segmentation":
+            out_seg = []
+            for m in self.predict_masks(instances):
+                vals, counts = np.unique(m, return_counts=True)
+                share = {
+                    (self.classes[int(v)] if self.classes else str(int(v))): round(c / m.size, 4)
+                    for v, c in zip(vals, counts)
+                }
+                out_seg.append({"mask_shape": list(m.shape), "pixel_share": share})
+            return out_seg
         out = self.predict_values(instances)
         if self.task == "classification":
             assert self.classes is not None

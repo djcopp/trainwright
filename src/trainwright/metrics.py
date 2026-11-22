@@ -16,6 +16,7 @@ CLASSIFICATION_METRICS = {
     "ece": "min",
 }
 REGRESSION_METRICS = {"rmse": "min", "mae": "min", "r2": "max", "mape": "min"}
+SEGMENTATION_METRICS = {"miou": "max", "pixel_accuracy": "max", "mean_dice": "max"}
 
 
 def metric_mode(metric: str) -> str:
@@ -24,13 +25,59 @@ def metric_mode(metric: str) -> str:
         return CLASSIFICATION_METRICS[m]
     if m in REGRESSION_METRICS:
         return REGRESSION_METRICS[m]
+    if m in SEGMENTATION_METRICS:
+        return SEGMENTATION_METRICS[m]
     if m.endswith("loss"):
         return "min"
     raise KeyError(f"Unknown metric {metric!r}")
 
 
 def valid_metrics(task: str) -> list[str]:
-    return list(CLASSIFICATION_METRICS if task == "classification" else REGRESSION_METRICS)
+    return list(
+        CLASSIFICATION_METRICS
+        if task == "classification"
+        else SEGMENTATION_METRICS
+        if task == "segmentation"
+        else REGRESSION_METRICS
+    )
+
+
+def segmentation_metrics(conf_rows: np.ndarray, n_classes: int) -> dict[str, float]:
+    """Metrics from per-image confusion rows [N, K*K] (row = true class, column = predicted).
+
+    IoU and Dice are averaged over the classes that occur in the labels or the predictions."""
+    k = n_classes
+    cm = np.asarray(conf_rows, dtype=np.float64).reshape(-1, k, k).sum(0)
+    tp = np.diag(cm)
+    gt, pred = cm.sum(1), cm.sum(0)
+    union = gt + pred - tp
+    seen = union > 0
+    iou = np.divide(tp, union, out=np.zeros_like(tp), where=seen)
+    dice = np.divide(2 * tp, gt + pred, out=np.zeros_like(tp), where=seen)
+    total = cm.sum()
+    return {
+        "miou": float(iou[seen].mean()) if seen.any() else 0.0,
+        "pixel_accuracy": float(tp.sum() / total) if total else 0.0,
+        "mean_dice": float(dice[seen].mean()) if seen.any() else 0.0,
+    }
+
+
+def per_class_iou(conf_rows: np.ndarray, classes: list[str]) -> list[dict[str, Any]]:
+    k = len(classes)
+    cm = np.asarray(conf_rows, dtype=np.float64).reshape(-1, k, k).sum(0)
+    tp, gt, pred = np.diag(cm), cm.sum(1), cm.sum(0)
+    out = []
+    for i, c in enumerate(classes):
+        union = gt[i] + pred[i] - tp[i]
+        if union > 0:
+            out.append(
+                {
+                    "class": c,
+                    "iou": round(float(tp[i] / union), 4),
+                    "pixel_share": round(float(gt[i] / max(cm.sum(), 1)), 4),
+                }
+            )
+    return sorted(out, key=lambda r: r["iou"])
 
 
 def _softmax(logits: np.ndarray) -> np.ndarray:
@@ -121,6 +168,9 @@ def compute_metrics(
     if task == "classification":
         probs = outputs if outputs_are_probs else _softmax(np.asarray(outputs, dtype=np.float64))
         return classification_metrics(y, probs, n_classes or probs.shape[1])
+    if task == "segmentation":
+        k = n_classes or int(round(np.sqrt(np.asarray(outputs).shape[1])))
+        return segmentation_metrics(outputs, k)
     return regression_metrics(y, outputs)
 
 
@@ -174,6 +224,8 @@ def top_confusions(cm: np.ndarray, classes: list[str], k: int = 10) -> list[dict
 
 def _single_metric(task: str, metric: str, y: np.ndarray, out: np.ndarray, n_classes: int) -> float:
     """Fast path for the metrics used in model selection (used by the bootstrap)."""
+    if task == "segmentation":
+        return segmentation_metrics(out, n_classes)[metric]
     if task == "classification":
         pred = out.argmax(1)
         if metric == "accuracy":

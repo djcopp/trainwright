@@ -116,11 +116,15 @@ def load_records(project_root: Path, cfg: ProjectConfig) -> Records:
     path = p if p.is_absolute() else (project_root / p).resolve()
     if not path.exists():
         raise FileNotFoundError(f"Data path {path} does not exist (data.path in trainwright.yaml)")
-    recs = (
-        _load_images(path, cfg)
-        if cfg.modality == "image"
-        else _load_table_like(path, cfg, project_root / ".trainwright")
-    )
+    if cfg.task == "segmentation":
+        if not cfg.data.mask_path:
+            raise ValueError("Segmentation needs data.mask_path: a folder of PNG masks.")
+        m = Path(cfg.data.mask_path)
+        recs = _load_segmentation(path, m if m.is_absolute() else (project_root / m).resolve())
+    elif cfg.modality == "image":
+        recs = _load_images(path, cfg)
+    else:
+        recs = _load_table_like(path, cfg, project_root / ".trainwright")
     if cfg.data.corrections:
         recs = _apply_corrections(recs, project_root, cfg.data.corrections)
     return recs
@@ -238,6 +242,39 @@ def _load_table_like(path: Path, cfg: ProjectConfig, state_dir: Path | None = No
         times=times,
         dropped_missing_target=dropped,
     )
+
+
+def _load_segmentation(path: Path, mask_dir: Path) -> Records:
+    """Images under ``path`` (recursive) paired with ``mask_dir``/<same stem>.png."""
+    if not mask_dir.exists():
+        raise FileNotFoundError(f"Mask folder {mask_dir} does not exist (data.mask_path)")
+    masks = {
+        f.relative_to(mask_dir).with_suffix("").as_posix(): f
+        for f in mask_dir.rglob("*.png")
+        if not f.name.startswith(".")
+    }
+    paths, ys, missing = [], [], []
+    for f in sorted(path.rglob("*")):
+        if not (f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS) or f.name.startswith("."):
+            continue
+        key = f.relative_to(path).with_suffix("").as_posix()
+        m = masks.get(key) or masks.get(f.stem)
+        if m is None:
+            missing.append(key)
+            continue
+        paths.append(f)
+        ys.append(str(m))
+    if not paths:
+        raise ValueError(f"No image in {path} has a mask with the same stem in {mask_dir}.")
+    rel = [str(p.relative_to(path)) for p in paths]
+    fingerprint = sha256_strings(
+        f"{r}:{p.stat().st_size}:{Path(m).stat().st_size}" for r, p, m in zip(rel, paths, ys)
+    )
+    recs = Records(
+        "image", "segmentation", rel, np.array(ys, dtype=object), fingerprint, paths=paths
+    )
+    recs.dropped_missing_target = len(missing)
+    return recs
 
 
 def _load_images(path: Path, cfg: ProjectConfig) -> Records:

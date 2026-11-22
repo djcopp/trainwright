@@ -195,3 +195,59 @@ class RegressionTask(Task):
         return compute_metrics(
             "regression", self.target_scaler.decode(y), self.postprocess(outputs)
         )
+
+
+def confusion_rows(logits: torch.Tensor, y: torch.Tensor, k: int) -> torch.Tensor:
+    """Per-image confusion counts [B, K*K] (true * K + predicted), ignoring label 255."""
+    if logits.shape[-2:] != y.shape[-2:]:
+        logits = F.interpolate(logits, size=y.shape[-2:], mode="bilinear", align_corners=False)
+    pred = logits.argmax(1)
+    b = y.shape[0]
+    valid = y != 255
+    idx = (y.clamp(0, k - 1) * k + pred).long()
+    offs = torch.arange(b, device=y.device).view(b, 1, 1) * (k * k)
+    flat = (idx + offs)[valid]
+    return torch.bincount(flat, minlength=b * k * k).view(b, k * k).float()
+
+
+class SegmentationTask(Task):
+    """Per-pixel cross-entropy; outputs are per-image confusion rows so metrics stay cheap."""
+
+    def __init__(
+        self,
+        model: nn.Module,
+        n_classes: int,
+        optim: OptimConfig | None = None,
+        label_smoothing: float = 0.0,
+    ):
+        super().__init__(model, optim)
+        self.n_classes = n_classes
+        self.label_smoothing = label_smoothing
+
+    def loss(self, outputs: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        if outputs.shape[-2:] != y.shape[-2:]:
+            outputs = F.interpolate(
+                outputs, size=y.shape[-2:], mode="bilinear", align_corners=False
+            )
+        return F.cross_entropy(
+            outputs.float(), y, ignore_index=255, label_smoothing=self.label_smoothing
+        )
+
+    def _step(self, batch: Batch) -> dict[str, torch.Tensor]:
+        out = self(batch)
+        y = batch["y"]
+        rows = confusion_rows(out.detach(), y, self.n_classes)
+        return {
+            "loss": self.loss(out, y),
+            "outputs": rows,
+            "y": torch.zeros(y.shape[0], dtype=torch.long, device=y.device),
+        }
+
+    def training_step(self, batch: Batch) -> dict[str, torch.Tensor]:
+        return self._step(batch)
+
+    def validation_step(self, batch: Batch) -> dict[str, torch.Tensor]:
+        return self._step(batch)
+
+    def compute_metrics(self, outputs: np.ndarray, y: np.ndarray) -> dict[str, float]:
+        return compute_metrics("segmentation", y, outputs, self.n_classes)

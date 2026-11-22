@@ -30,6 +30,10 @@ def _baseline_outputs(
     from .baselines import _pixels, _tabular_frame, _to_str_cats
 
     cfg = project.config
+    if cfg.task == "segmentation":
+        from .segmentation import baseline_rows
+
+        return baseline_rows(project, run, split)
     blob = joblib.load(run.dir / "model.joblib")
     model = blob["model"]
     records = get_records(project)
@@ -146,7 +150,24 @@ def evaluate(
         "evaluated_at": now_iso(),
         "primary_metric": cfg.metric,
     }
-    if cfg.task == "classification":
+    if cfg.task == "segmentation":
+        from .metrics import per_class_iou, segmentation_metrics
+        from .segmentation import image_miou
+
+        classes_s = list(require_split(project, get_records(project))["classes"])
+        rows = np.asarray(outputs)
+        metrics = segmentation_metrics(rows, len(classes_s))
+        result["per_class_iou"] = per_class_iou(rows, classes_s)
+        per_img = image_miou(rows, len(classes_s))
+        result["worst_examples"] = [
+            {
+                "id": ids[i],
+                "image_miou": round(float(per_img[i]), 4),
+                **({"path": paths[i]} if len(paths) else {}),
+            }
+            for i in np.argsort(per_img)[:25]
+        ]
+    elif cfg.task == "classification":
         sp = (
             require_split(project, get_records(project))
             if kind == "baseline" or (run.dir / "model.joblib").exists() or run.meta.get("members")

@@ -512,6 +512,25 @@ def profile(records: Records, cfg: ProjectConfig, state_dir: Path | None = None)
                 "Consider collecting more data or merging rare classes."
             )
         metric, mode, why = recommend_metric("classification", dict(counts))
+    elif cfg.task == "segmentation":
+        out["target"] = _mask_profile(records, cfg)
+        t = out["target"]
+        if t["rare_classes"]:
+            recs.append(
+                f"{len(t['rare_classes'])} class(es) cover <0.1% of labelled pixels "
+                f"({t['rare_classes'][:6]}); mIoU weighs them like any other class, so they "
+                "will dominate the error. Check them in `trainwright errors best`."
+            )
+        if t["ignored_share"] > 0.2:
+            recs.append(
+                f"{t['ignored_share']:.0%} of pixels are 255 (ignored in training and scoring)."
+            )
+        metric, mode, why = (
+            "miou",
+            "max",
+            "mean intersection-over-union over classes: the standard segmentation metric, "
+            "insensitive to how much of the image is background",
+        )
     else:
         yv = records.y.astype(float)
         skew = float(pd.Series(yv).skew())
@@ -633,3 +652,42 @@ def profile(records: Records, cfg: ProjectConfig, state_dir: Path | None = None)
         out["duplicates_error"] = str(e)
     out["recommendations"] = recs
     return out
+
+
+def _mask_profile(records: Records, cfg: ProjectConfig, sample: int = 300) -> dict[str, Any]:
+    """Pixel share per class from a sample of masks, and mask/image size agreement."""
+    from PIL import Image
+
+    from .split import segmentation_classes
+
+    classes = segmentation_classes(records, cfg)
+    k = len(classes)
+    rng = np.random.default_rng(0)
+    idx = rng.permutation(len(records))[:sample]
+    counts = np.zeros(k + 1, dtype=np.float64)  # last bin: values >= k (unexpected)
+    ignored = total = 0
+    size_mismatch = 0
+    present = np.zeros(k)
+    for i in idx:
+        m = np.asarray(Image.open(records.y[i]))
+        if records.paths is not None:
+            with Image.open(records.paths[i]) as im:
+                size_mismatch += int(im.size != (m.shape[1], m.shape[0]))
+        total += m.size
+        ignored += int((m == 255).sum())
+        v = m[m != 255].astype(np.int64)
+        counts += np.bincount(np.minimum(v, k), minlength=k + 1)
+        present[np.unique(np.minimum(v, k - 1))] += 1
+    labelled = max(counts.sum(), 1)
+    share = {classes[c]: round(float(counts[c] / labelled), 5) for c in range(k)}
+    return {
+        "n_classes": k,
+        "classes": classes,
+        "pixel_share": dict(sorted(share.items(), key=lambda kv: -kv[1])),
+        "images_with_class": {classes[c]: int(present[c]) for c in range(k)},
+        "rare_classes": [c for c, v in share.items() if v < 0.001],
+        "ignored_share": round(ignored / max(total, 1), 4),
+        "unexpected_values_share": round(float(counts[k] / labelled), 5),
+        "mask_image_size_mismatch": size_mismatch,
+        "sampled": len(idx),
+    }

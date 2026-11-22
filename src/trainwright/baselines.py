@@ -142,9 +142,17 @@ def _proba_full(model: Any, X: Any, n_classes: int) -> np.ndarray:
     return full
 
 
+def baseline_names(cfg: Any) -> list[str]:
+    return ["dummy"] if cfg.task == "segmentation" else BASELINES[cfg.modality]
+
+
 def run_baselines(
     project: Project, which: list[str] | None = None, progress: Callable[[str], None] | None = print
 ) -> list[Run]:
+    if project.config.task == "segmentation":
+        from .segmentation import run_seg_baselines
+
+        return run_seg_baselines(project, progress)
     import joblib
     from sklearn.dummy import DummyClassifier, DummyRegressor
     from sklearn.feature_extraction.text import TfidfVectorizer

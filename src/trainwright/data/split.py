@@ -30,6 +30,23 @@ def resolve_strategy(cfg: ProjectConfig) -> str:
     return "stratified" if cfg.task == "classification" else "random"
 
 
+def segmentation_classes(records: Records, cfg: ProjectConfig, sample: int = 400) -> list[str]:
+    """Class names in mask-value order: data.classes, else 0..max value seen (255 = ignore)."""
+    if cfg.data.classes:
+        return list(cfg.data.classes)
+    from PIL import Image
+
+    rng = np.random.default_rng(0)
+    idx = rng.permutation(len(records))[:sample]
+    top = 0
+    for i in idx:
+        a = np.asarray(Image.open(records.y[i]))
+        a = a[a != 255]
+        if a.size:
+            top = max(top, int(a.max()))
+    return [str(v) for v in range(top + 1)]
+
+
 def make_split(
     records: Records,
     cfg: ProjectConfig,
@@ -153,6 +170,8 @@ def make_split(
         missing_val = [c for c in out["classes"] if c not in out["class_counts"]["val"]]
         if missing_val:
             warnings.append(f"{len(missing_val)} class(es) absent from val: {missing_val[:10]}")
+    elif cfg.task == "segmentation":
+        out["classes"] = segmentation_classes(records, cfg)
     out["split_hash"] = sha256_strings(
         ["train", *out["train"], "val", *out["val"], "test", *out["test"]]
     )[:16]

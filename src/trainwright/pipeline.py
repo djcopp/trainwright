@@ -85,6 +85,10 @@ def build_task(cfg: ProjectConfig, exp: ExperimentConfig, dm: ProjectDataModule)
         return ClassificationTask(
             model, len(dm.classes or []), exp.optim, dm.class_weights(), exp.train.label_smoothing
         )
+    if cfg.task == "segmentation":
+        from .task import SegmentationTask
+
+        return SegmentationTask(model, len(dm.classes or []), exp.optim, exp.train.label_smoothing)
     return RegressionTask(model, exp.optim, dm.target_scaler)
 
 

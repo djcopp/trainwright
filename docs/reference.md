@@ -67,7 +67,7 @@ MCP instead of the CLI: `claude mcp add trainwright -- trainwright mcp`.
 
 | command | does |
 |---|---|
-| `init` | project from a CSV/Parquet file, image folder or manifest |
+| `init` | project from a CSV/Parquet file, image folder or manifest; `--masks DIR` for segmentation |
 | `profile` | types, leaks (incl. sum-of-columns), duplicates, entity keys; dates and free text become features |
 | `auto`, `wait` | the whole search, finalized; runs until new rounds stop improving (`--budget` for a hard ceiling); `--background` + `wait` |
 | `check`, `decide` | the definition of done, read from the project's records; record judgement calls for reviewers |
@@ -158,7 +158,7 @@ docker build -t my-model artifacts/<run>
 
 ## Limitations
 
-- Classification and regression only.
+- Classification, regression and semantic segmentation. Segmentation models aren't ensembled yet.
 - Cost figures are estimates from the `cost:` assumptions in `trainwright.yaml`.
 - The agent comparison is 12 tasks with 1–2 runs per side: differences under ~1% are noise. Method and every result: [agent-trials.md](agent-trials.md).
 

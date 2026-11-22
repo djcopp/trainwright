@@ -123,7 +123,10 @@ class ProjectDataModule(DataModule):
         self.records = {s: records.subset(split[s]) for s in splits}
         if "train" not in self.records:
             self.records["train"] = records.subset(split["train"])
-        self.classes = split.get("classes") if self.task == "classification" else None
+        self.classes = (
+            split.get("classes") if self.task in ("classification", "segmentation") else None
+        )
+        self._mask_source: dict[str, MaskSource] = {}
         self.label_encoder = LabelEncoder(self.classes) if self.classes else None
         self.target_scaler: TargetScaler | None = None
         self._tensors: dict[str, dict[str, torch.Tensor]] = {}
@@ -134,6 +137,8 @@ class ProjectDataModule(DataModule):
 
     # ------------------------------------------------------------------ setup
     def _targets(self, recs: Records) -> np.ndarray:
+        if self.task == "segmentation":  # the masks come from MaskSource; this is a placeholder
+            return np.zeros(len(recs), dtype=np.int64)
         if self.task == "classification":
             assert self.label_encoder is not None
             return self.label_encoder.encode(recs.y.tolist())
@@ -215,9 +220,16 @@ class ProjectDataModule(DataModule):
                 est = len(full_records) * 3 * size * size
                 if pp.cache_images == "always" or est < 20e9:
                     cache = ImageCache.build(cache_dir, full_records, size, self.log)
+            mcache = (
+                MaskCache.build(cache_dir, full_records, size, self.log)
+                if self.task == "segmentation" and cache_dir is not None
+                else None
+            )
             for s, recs in self.records.items():
                 self._image_source[s] = ImageSource(recs, size, cache)
                 self._tensors[s] = {"y": torch.from_numpy(self._targets(recs))}
+                if self.task == "segmentation":
+                    self._mask_source[s] = MaskSource(recs, size, mcache)
             self._spec = {"image_size": size}
         else:
             raise ValueError(self.modality)
@@ -294,6 +306,7 @@ class ProjectDataModule(DataModule):
                 augment=aug,
                 hflip=self.exp.preprocess.hflip,
                 drop_last_singleton=train,
+                masks=self._mask_source.get(split),
             )
         return TensorLoader(
             self._tensors[split],
@@ -395,7 +408,9 @@ class ImageLoader:
         augment: str = "none",
         hflip: bool = True,
         drop_last_singleton: bool = False,
+        masks: MaskSource | None = None,
     ):
+        self.masks = masks
         self.source = source
         self.y = y
         self.batch_size = batch_size
@@ -445,6 +460,12 @@ class ImageLoader:
             if str(self.device).startswith("cuda"):
                 host = host.pin_memory()  # lets the host->GPU copy overlap with compute
             x = host.to(self.device, non_blocking=True).float().div_(255.0)
+            if self.masks is not None:  # segmentation: the target is a mask [B, S, S]
+                m = torch.from_numpy(self.masks.get(idx)).to(self.device).long()
+                if self.augment != "none":
+                    x, m = augment_pair(x, m, self.augment, self.hflip, self._gen)
+                yield {"image": x, "y": m}
+                continue
             if self.augment != "none":
                 x = augment_images(x, self.augment, self.hflip, self._gen)
             yield {"image": x, "y": self.y[torch.from_numpy(idx)].to(self.device)}
@@ -500,3 +521,102 @@ def augment_images(x: torch.Tensor, level: str, hflip: bool, gen: torch.Generato
         box = box & mask.view(b, 1, 1)
         x = x.masked_fill(box.unsqueeze(1), 0.5)
     return x.clamp_(0, 1)
+
+
+# --------------------------------------------------------------------------- masks
+
+
+def load_mask(path: str | Path, size: int) -> np.ndarray:
+    """Class-index mask resized with nearest neighbour (labels must not be interpolated)."""
+    from PIL import Image
+
+    m: Image.Image = Image.open(path)
+    if m.mode not in ("L", "P", "I", "I;16"):
+        m = m.convert("L")
+    return np.asarray(m.resize((size, size), Image.Resampling.NEAREST)).astype(np.uint8)
+
+
+class MaskCache:
+    """Disk-backed uint8 array [N, S, S] of resized masks in records order."""
+
+    def __init__(self, array: np.ndarray, index: dict[str, int]):
+        self.array = array
+        self.index = index
+
+    @classmethod
+    def build(
+        cls, cache_dir: Path, records: Records, size: int, log: Callable[[str], None]
+    ) -> MaskCache:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        stem = cache_dir / f"masks-{size}-{records.fingerprint[:16]}"
+        arr_path, meta_path = stem.with_suffix(".npy"), stem.with_suffix(".json")
+        n = len(records)
+        if arr_path.exists() and meta_path.exists():
+            meta = json.loads(meta_path.read_text())
+            if meta.get("complete") and meta.get("n") == n:
+                arr = np.load(arr_path, mmap_mode="r")
+                return cls(arr, {i: k for k, i in enumerate(meta["ids"])})
+        log(f"building mask cache for {n} masks at {size}px -> {arr_path.name}")
+        arr = np.lib.format.open_memmap(arr_path, mode="w+", dtype=np.uint8, shape=(n, size, size))
+
+        def work(i: int) -> None:
+            arr[i] = load_mask(records.y[i], size)
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            list(ex.map(work, range(n), chunksize=64))
+        arr.flush()
+        meta_path.write_text(
+            json.dumps({"n": n, "size": size, "ids": records.ids, "complete": True})
+        )
+        return cls(np.load(arr_path, mmap_mode="r"), {i: k for k, i in enumerate(records.ids)})
+
+
+class MaskSource:
+    def __init__(self, records: Records, size: int, cache: MaskCache | None):
+        self.records = records
+        self.size = size
+        self.cache = cache
+        self.rows = (
+            np.array([cache.index[i] for i in records.ids], dtype=np.int64) if cache else None
+        )
+
+    def get(self, idx: np.ndarray) -> np.ndarray:
+        if self.cache is not None and self.rows is not None:
+            return np.asarray(self.cache.array[self.rows[idx]])
+        return np.stack([load_mask(self.records.y[i], self.size) for i in idx])
+
+
+def augment_pair(
+    x: torch.Tensor, m: torch.Tensor, level: str, hflip: bool, gen: torch.Generator
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Segmentation augmentation: the same flip/zoom/shift for image and mask (nearest for the
+    mask, ignore=255 where the zoom reveals no pixels), colour jitter on the image only."""
+    (smin, smax), _rot, trans, jitter, _erase = _AUG[level]
+    b = x.shape[0]
+
+    def rand(*shape: int) -> torch.Tensor:
+        return torch.rand(*shape, generator=gen).to(x.device)
+
+    zoom = 1.0 / (smin + (smax - smin) * rand(b)).sqrt()
+    tx, ty = (rand(b) * 2 - 1) * trans, (rand(b) * 2 - 1) * trans
+    flip = torch.where(rand(b) < 0.5, -1.0, 1.0) if hflip else torch.ones(b, device=x.device)
+    zero = torch.zeros(b, device=x.device)
+    theta = torch.stack(
+        [torch.stack([flip / zoom, zero, tx], 1), torch.stack([zero, 1 / zoom, ty], 1)], 1
+    )
+    grid = F.affine_grid(theta, list(x.shape), align_corners=False)
+    x = F.grid_sample(x, grid, mode="bilinear", padding_mode="reflection", align_corners=False)
+    mf = F.grid_sample(
+        m.unsqueeze(1).float(), grid, mode="nearest", padding_mode="zeros", align_corners=False
+    )
+    inside = F.grid_sample(
+        torch.ones_like(mf), grid, mode="nearest", padding_mode="zeros", align_corners=False
+    )
+    m = torch.where(inside > 0.5, mf, torch.full_like(mf, 255.0)).squeeze(1).long()
+    if jitter > 0:
+        bright = 1 + (rand(b, 1, 1, 1) * 2 - 1) * jitter
+        contrast = 1 + (rand(b, 1, 1, 1) * 2 - 1) * jitter
+        x = x * bright
+        mean = x.mean(dim=(1, 2, 3), keepdim=True)
+        x = (x - mean) * contrast + mean
+    return x.clamp_(0, 1), m

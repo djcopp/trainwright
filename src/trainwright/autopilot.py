@@ -47,6 +47,26 @@ LADDERS: dict[str, list[tuple[str, dict[str, Any], float, str]]] = {
             "autopilot: fine-tune a pretrained CNN (wins when images differ from natural photos)",
         ),
     ],
+    "segmentation": [
+        (
+            "seg-probe",
+            {"model.name": "seg_probe"},
+            0.25,
+            "autopilot: frozen DINOv2-small patch features + linear head (strong with few labels)",
+        ),
+        (
+            "segmenter",
+            {"model.name": "image_segmenter"},
+            0.35,
+            "autopilot: fine-tune LR-ASPP MobileNetV3 (fast, cheap to serve)",
+        ),
+        (
+            "deeplab",
+            {"model.name": "image_segmenter", "model.params.arch": "deeplabv3_resnet50"},
+            0.40,
+            "autopilot: fine-tune DeepLabV3-ResNet50 (slower, usually more accurate)",
+        ),
+    ],
     "text": [
         (
             "encoder",
@@ -425,15 +445,18 @@ def _autopilot(
     done_models = {r.get("model") for r in rows}
     if sha:
         note(f"features.py in use (sha {sha}); steps already run with it are skipped")
-    todo = [b for b in BASELINES[cfg.modality] if f"baseline:{b}" not in done_models]
+    from .baselines import baseline_names
+
+    todo = [b for b in baseline_names(cfg) if f"baseline:{b}" not in done_models]
     if todo:
         run_baselines(project, todo, progress=None)
         note(f"baselines: {', '.join(todo)}")
 
     hyps = {r.get("hypothesis") for r in rows}
     n_rows = len(get_records(project).y)
-    hyps_by_name = {n: h for n, _, _, h in LADDERS[cfg.modality]}
-    for name, ov, share, hyp in LADDERS[cfg.modality]:
+    ladder = LADDERS["segmentation" if cfg.task == "segmentation" else cfg.modality]
+    hyps_by_name = {n: h for n, _, _, h in ladder}
+    for name, ov, share, hyp in ladder:
         if hyp in hyps:
             continue
         cap = min(share * budget_s, left())
@@ -533,7 +556,8 @@ def _autopilot(
     # leaving room to finalize), then the greedy ensemble over everything
     bn = best_run(project, kind="neural")
     replicas = 0
-    if seeds and not bagged and bn is not None and current(bn):
+    seg = cfg.task == "segmentation"  # no averaging of segmentation outputs: no blends yet
+    if seeds and not bagged and not seg and bn is not None and current(bn):
         per = float(bn.get("train_time_s") or 0.0) + 5
         base_seed = int(Run(project.runs_dir / bn["id"]).meta.get("seed") or 0)
         max_replicas = 2 if n_rows > 200_000 else 4
@@ -564,7 +588,11 @@ def _autopilot(
             replicas += 1
         if replicas:
             note(f"trained {replicas} seed replica(s) of {bn['id']}")
-    res, err = _guarded(project, ["ensemble", "--top", "8"], max(60.0, 0.1 * budget_s) + 120)
+    res, err = (
+        (None, "segmentation outputs can't be averaged yet")
+        if seg
+        else _guarded(project, ["ensemble", "--top", "8"], max(60.0, 0.1 * budget_s) + 120)
+    )
     if res is None:
         note(f"no ensemble: {err}")
     elif res.get("run"):
