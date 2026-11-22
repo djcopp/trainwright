@@ -478,35 +478,46 @@ def _autopilot(
                 f"now {b2['id'] if b2 else '?'} val_{m}={float((b2 or {}).get(f'val_{m}') or 'nan'):.4f}"
             )
 
-    # cross-validated bag of the best neural recipe: k models on train+val, out-of-fold val
+    # cross-validated bags: the best neural recipe first, then (while the budget lasts) the next
+    # best distinct recipes, so the final ensemble blends different models, not copies of one.
+    # A bag supersedes its parent, so best_run(kind="neural") moves on to the next recipe.
     bagged = False
-    bn = best_run(project, kind="neural")
-    if (
-        bag
-        and cfg.modality == "tabular"
-        and not cfg.data.time_column
-        and bn is not None
-        and current(bn)
-        and n_rows <= 100_000
-    ):
+    m = cfg.metric
+    sign = 1.0 if cfg.metric_mode == "max" else -1.0
+    first: float | None = None
+    for nb in range(3):
+        bn = best_run(project, kind="neural")
+        if not (
+            bag
+            and cfg.modality == "tabular"
+            and not cfg.data.time_column
+            and bn is not None
+            and current(bn)
+            and n_rows <= 100_000
+        ):
+            break
+        score = float(bn.get(f"val_{m}") or float("nan"))
+        if first is not None and not (sign * (score - first) >= -0.03 * abs(first)):
+            break  # the next recipe is clearly worse: a bag of it won't help the blend
         per = float(bn.get("train_time_s") or 0.0) + 5
-        if left() > 5 * per * 1.3:
-            cap = left() * 0.8
-            res, err = _guarded(
-                project,
-                ["bag", bn["id"], "--folds", "5", "--budget", f"{int(cap)}s"],
-                cap * 1.3 + 120,
-            )
-            if res is None:
-                note(f"bag failed: {err}")
-            else:
-                summ = res.get("summary") or {}
-                m = cfg.metric
-                note(
-                    f"5-fold bag of {bn['id']}: val_{m}={summ['val'][m]:.4f} (out-of-fold), "
-                    f"oof over {summ['n_oof']} rows {summ['oof'][m]:.4f}"
-                )
-                bagged = True
+        if left() <= 5 * per * 1.3:
+            break
+        cap = left() * (0.8 if nb == 0 else 0.6)
+        res, err = _guarded(
+            project,
+            ["bag", bn["id"], "--folds", "5", "--budget", f"{int(cap)}s"],
+            cap * 1.3 + 120,
+        )
+        if res is None:
+            note(f"bag failed: {err}")
+            break
+        summ = res.get("summary") or {}
+        note(
+            f"5-fold bag of {bn['id']}: val_{m}={summ['val'][m]:.4f} (out-of-fold), "
+            f"oof over {summ['n_oof']} rows {summ['oof'][m]:.4f}"
+        )
+        bagged = True
+        first = score if first is None else first
 
     # seed replicas of the best neural recipe, one at a time while the budget allows (always
     # leaving room to finalize), then the greedy ensemble over everything
