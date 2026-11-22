@@ -861,7 +861,7 @@ def auto(
     import sys
 
     from ._utils import parse_duration
-    from .autopilot import autopilot, log_path, read_state
+    from .autopilot import autopilot, log_path
     from .config import parse_override
     from .leaderboard import format_table, leaderboard
 
@@ -871,9 +871,10 @@ def auto(
     budget_s = (parse_duration(budget) or 1200.0) if budget else None
     ov = dict(parse_override(o) for o in override)
     if background:
-        st = read_state(project)
-        if st and st.get("status") == "running":
-            raise CLIError(f"auto is already running (pid {st['pid']}): `trainwright wait`")
+        from .autopilot import auto_running
+
+        if auto_running(project):
+            raise CLIError("auto is already running in this project: `trainwright wait`")
         project.ensure_dirs()
         args = [sys.executable, "-m", "trainwright", "auto"]
         args += ["--budget", f"{int(budget_s)}s"] if budget_s else []

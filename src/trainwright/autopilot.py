@@ -338,12 +338,22 @@ def autopilot(
     features: bool = True,
 ) -> dict[str, Any]:
     """Run the search; records running/done/failed in .trainwright/auto.json for `wait`/`status`."""
+    import fcntl
     import os
     import traceback
 
     t0 = time.time()
     converge = budget_s is None
     budget_s = budget_s or SAFETY_CAP_S
+    project.ensure_dirs()
+    lock = (project.state_dir / "auto.lock").open("w")
+    try:  # held for auto's lifetime; the OS releases it if the process dies
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock.close()
+        raise RuntimeError(
+            "another `trainwright auto` is running in this project; `trainwright wait` for it"
+        ) from None
     try:
         res = _autopilot(
             project, budget_s, overrides, finish, seeds, progress, bag, features, converge
@@ -356,6 +366,7 @@ def autopilot(
         )  # fmt: skip
         with log_path(project).open("a") as f:
             f.write(traceback.format_exc())
+        lock.close()
         raise
     write_json(
         state_path(project),
@@ -364,7 +375,24 @@ def autopilot(
          "final": res.get("final"), "stopped": res.get("stopped"),
          "mode": "converge" if converge else "budget"},
     )  # fmt: skip
+    lock.close()
     return res
+
+
+def auto_running(project: Project) -> bool:
+    """True while another process holds the auto lock (a crashed run releases it)."""
+    import fcntl
+
+    path = project.state_dir / "auto.lock"
+    if not path.exists():
+        return False
+    with path.open("a") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        fcntl.flock(f, fcntl.LOCK_UN)
+    return False
 
 
 def _autopilot(
@@ -388,11 +416,6 @@ def _autopilot(
     t0 = time.time()
     deadline = t0 + budget_s
     project.ensure_dirs()
-    prev = read_state(project)
-    if prev and prev.get("status") == "running" and int(prev.get("pid", -1)) != os.getpid():
-        raise RuntimeError(
-            f"auto is already running (pid {prev['pid']}); `trainwright wait` for it to finish"
-        )
     write_json(
         state_path(project),
         {"status": "running", "pid": os.getpid(), "started": t0, "deadline": deadline,

@@ -57,10 +57,17 @@ class Run:
         project_root: Path | None = None,
     ) -> Run:
         runs_dir.mkdir(parents=True, exist_ok=True)
-        seq = next_sequence(runs_dir)
-        run_id = f"{seq:03d}-{slugify(name)}"
-        d = runs_dir / run_id
-        d.mkdir(parents=True, exist_ok=False)
+        for _ in range(50):  # another process may claim the same number: take the next one
+            seq = next_sequence(runs_dir)
+            run_id = f"{seq:03d}-{slugify(name)}"
+            d = runs_dir / run_id
+            try:
+                d.mkdir(parents=True, exist_ok=False)
+                break
+            except FileExistsError:
+                continue
+        else:  # pragma: no cover
+            raise RuntimeError(f"could not allocate a run directory in {runs_dir}")
         run = cls(d)
         meta: dict[str, Any] = {
             "id": run_id,
