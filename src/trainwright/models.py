@@ -253,6 +253,20 @@ class TabularMLP(nn.Module):
 
 # --------------------------------------------------------------------------- image
 
+
+def image_keys(x: torch.Tensor) -> list[Any]:
+    """Exact per-image cache keys: a hash of a 24x24 grid of the original 8-bit pixel values.
+
+    Inputs are uint8/255, so x*255 rounds back to the exact bytes; a float projection on the
+    GPU is not bit-reproducible and made every lookup miss."""
+    import hashlib
+
+    h, w = x.shape[-2:]
+    grid = x[..., :: max(1, h // 24), :: max(1, w // 24)]
+    raw = grid.mul(255).round().clamp(0, 255).to(torch.uint8).cpu().numpy()
+    return [hashlib.blake2b(r.tobytes(), digest_size=16).digest() for r in raw]
+
+
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
@@ -381,7 +395,7 @@ class ImagePretrained(nn.Module):
         # frozen backbone + unaugmented inputs -> each image's features never change, so compute
         # them once (keyed by a random projection of the pixels) and train the head on the cache
         self.cache_features = freeze_backbone
-        self._cache: dict[tuple[int, int], torch.Tensor] = {}
+        self._cache: dict[Any, torch.Tensor] = {}
         self._proj: torch.Tensor | None = None
 
     def train(self, mode: bool = True) -> ImagePretrained:
@@ -390,18 +404,8 @@ class ImagePretrained(nn.Module):
             self.backbone.eval()  # frozen means frozen: no BatchNorm/dropout updates either
         return self
 
-    def _keys(self, x: torch.Tensor) -> list[tuple[int, int]]:
-        flat = x.flatten(1).float()
-        if (
-            self._proj is None
-            or self._proj.shape[0] != flat.shape[1]
-            or self._proj.device != x.device
-        ):
-            g = torch.Generator().manual_seed(1234)
-            self._proj = torch.randn(flat.shape[1], 2, generator=g).to(x.device)
-        with torch.autocast(x.device.type, enabled=False):
-            k = (flat @ self._proj).mul(1e4).round().long().cpu().tolist()
-        return [(a, b) for a, b in k]
+    def _keys(self, x: torch.Tensor) -> list[Any]:
+        return image_keys(x)
 
     def features(self, image: torch.Tensor) -> torch.Tensor:
         x = self.normalize(image)
@@ -684,8 +688,10 @@ class ImageSegmenter(nn.Module):
     recipe={
         "optim.lr": 1e-3,
         "optim.weight_decay": 1e-4,
-        "train.max_epochs": 40,
+        "train.max_epochs": 60,
+        "train.patience": 12,
         "preprocess.image_size": 448,
+        "preprocess.augment": "none",  # frozen features are computed once and cached
     },
 )
 class SegProbe(nn.Module):
@@ -702,6 +708,19 @@ class SegProbe(nn.Module):
         self.patch = int(self.encoder.config.patch_size)
         self.head = nn.Sequential(nn.BatchNorm2d(d), nn.Conv2d(d, int(spec.get("n_outputs", 2)), 1))
         self.normalize = Normalize(IMAGENET_MEAN, IMAGENET_STD)
+        # unaugmented inputs -> each image's patch features never change: compute them once
+        self.cache_features = True
+        self._cache: dict[Any, torch.Tensor] = {}
+        self._proj: torch.Tensor | None = None
+
+    def _keys(self, x: torch.Tensor) -> list[Any]:
+        return image_keys(x)
+
+    def _encode(self, x: torch.Tensor, gh: int, gw: int) -> torch.Tensor:
+        with torch.no_grad():
+            tok = self.encoder(pixel_values=x).last_hidden_state[:, 1:]
+        tok = tok[:, -gh * gw :]  # drop register tokens if the backbone has any
+        return tok.transpose(1, 2).reshape(tok.shape[0], -1, gh, gw)
 
     def train(self, mode: bool = True) -> SegProbe:
         super().train(mode)
@@ -712,9 +731,16 @@ class SegProbe(nn.Module):
         h, w = image.shape[-2:]
         gh, gw = h // self.patch, w // self.patch
         x = self.normalize(image)[..., : gh * self.patch, : gw * self.patch]
-        with torch.no_grad():
-            tok = self.encoder(pixel_values=x).last_hidden_state[:, 1:]
-        tok = tok[:, -gh * gw :]  # drop register tokens if the backbone has any
-        fmap = tok.transpose(1, 2).reshape(tok.shape[0], -1, gh, gw)
+        tracing = torch.jit.is_tracing() or torch.onnx.is_in_onnx_export()
+        if not self.cache_features or tracing:
+            fmap = self._encode(x, gh, gw)
+        else:
+            keys = self._keys(image)
+            miss = [i for i, k in enumerate(keys) if k not in self._cache]
+            if miss:
+                f = self._encode(x[miss], gh, gw).half().cpu()
+                for i, row in zip(miss, f):
+                    self._cache[keys[i]] = row
+            fmap = torch.stack([self._cache[k] for k in keys]).to(x.device)
         logits = self.head(fmap.float())
         return F.interpolate(logits, size=(h, w), mode="bilinear", align_corners=False)

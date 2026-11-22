@@ -478,3 +478,14 @@ def test_rollup_uses_only_events_before_the_cutoff():
     assert info["events_used"] == 4  # the June event is after the cutoff
     assert a["n_events"] == 2 and a["qty_max"] == 2 and a["rev_sum"] == 30.0
     assert round(a["days_since_last"]) == 61 and a["n_events_90d"] == 1
+
+
+def test_feature_cache_keys_are_exact_and_distinct():
+    from trainwright.models import image_keys
+
+    x = torch.randint(0, 256, (4, 3, 64, 64)).float() / 255
+    assert image_keys(x) == image_keys(x.clone())
+    assert len(set(image_keys(x))) == 4
+    y = x.clone()
+    y[0, 0, 0, 0] = (y[0, 0, 0, 0] * 255 + 1) % 256 / 255  # one sampled pixel changes
+    assert image_keys(y)[0] != image_keys(x)[0] and image_keys(y)[1:] == image_keys(x)[1:]
