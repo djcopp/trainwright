@@ -340,6 +340,7 @@ def run_trial(
         "Edit",
         "Glob",
         "Grep",
+        "Task",  # subagents (e.g. a reviewer); allowed for both conditions
     ]
     tx = tdir.parent / f"{tdir.name}.transcript.jsonl"
     for attempt in range(25):  # a usage-limit stop is retried (fresh folder) for up to ~6 h
