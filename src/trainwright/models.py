@@ -179,8 +179,11 @@ class TabularMLP(nn.Module):
         frequency_sigma: float = 0.1,
         num_embed_dim: int = 16,
         cat_embed_dim: int = 0,
+        k_ensemble: int = 1,
     ):
         super().__init__()
+        self.k = int(k_ensemble)
+        self.classification = spec.get("task", "classification") == "classification"
         n_num = int(spec.get("n_num", 0))
         cards = list(spec.get("cat_cardinalities", []))
         self.num_embed: nn.Module | None = None
@@ -203,7 +206,28 @@ class TabularMLP(nn.Module):
             layers.append(_Block(d, hidden, dropout, norm, activation, residual))
             d = hidden
         self.body = nn.Sequential(*layers)
-        self.head = nn.Linear(d, int(spec.get("n_outputs", 1)))
+        n_out = int(spec.get("n_outputs", 1))
+        if self.k > 1:
+            # TabM-mini (Gorishniy et al., 2024): k members share the MLP; each member scales the
+            # input by its own random-sign adapter and has its own head. Trained with the mean of the
+            # members' losses, predicting with their average: an ensemble for ~1 model's parameters.
+            g = torch.Generator().manual_seed(0)
+            signs = torch.randint(0, 2, (self.k, d_in), generator=g).float() * 2 - 1
+            self.adapter = nn.Parameter(signs)
+            self.head_w = nn.Parameter(torch.empty(self.k, d, n_out))
+            self.head_b = nn.Parameter(torch.zeros(self.k, n_out))
+            nn.init.uniform_(self.head_w, -1 / math.sqrt(d), 1 / math.sqrt(d))  # nn.Linear's init
+        else:
+            self.head = nn.Linear(d, n_out)
+
+    def aggregate(self, out: torch.Tensor) -> torch.Tensor:
+        """[B, k, out] member outputs -> [B, out] ensemble output (log of mean probs / mean)."""
+        if self.classification and out.shape[-1] > 1:
+            return torch.logsumexp(torch.log_softmax(out, dim=-1), dim=1) - math.log(out.shape[1])
+        if self.classification:  # single-logit binary: average probabilities, back to a logit
+            p = torch.sigmoid(out).mean(dim=1).clamp(1e-7, 1 - 1e-7)
+            return torch.log(p) - torch.log1p(-p)
+        return out.mean(dim=1)
 
     def forward(self, x_num: torch.Tensor, x_cat: torch.Tensor) -> torch.Tensor:
         parts = []
@@ -211,7 +235,13 @@ class TabularMLP(nn.Module):
             parts.append(self.num_embed(x_num) if self.num_embed is not None else x_num)
         for j, emb in enumerate(self.embeds):
             parts.append(emb(x_cat[:, j]))
-        return self.head(self.body(torch.cat(parts, dim=1)))
+        x = torch.cat(parts, dim=1)
+        if self.k == 1:
+            return self.head(self.body(x))
+        b = x.shape[0]
+        h = self.body((x[:, None, :] * self.adapter[None]).reshape(b * self.k, -1))
+        out = torch.einsum("bkd,kdo->bko", h.view(b, self.k, -1), self.head_w) + self.head_b
+        return out if self.training else self.aggregate(out)
 
 
 # --------------------------------------------------------------------------- image

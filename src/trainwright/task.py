@@ -48,6 +48,11 @@ class Task(nn.Module):
 
     def training_step(self, batch: Batch) -> dict[str, torch.Tensor]:
         out = self(batch)
+        if out.ndim == 3 and hasattr(self.model, "aggregate"):  # [B, k, out]: k ensemble members
+            loss = torch.stack(
+                [self.loss(out[:, j], batch["y"]) for j in range(out.shape[1])]
+            ).mean()
+            return {"loss": loss, "outputs": self.model.aggregate(out).detach()}
         return {"loss": self.loss(out, batch["y"]), "outputs": out.detach()}
 
     def validation_step(self, batch: Batch) -> dict[str, torch.Tensor]:
