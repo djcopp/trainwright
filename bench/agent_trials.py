@@ -29,6 +29,10 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 
+UNTIMED = (
+    " Work fully autonomously: there is nobody to answer questions, so make reasonable decisions "
+    "yourself. Keep individual commands under ~8 minutes (run longer jobs in the background)."
+)
 AUTONOMY = (
     " Work fully autonomously: there is nobody to answer questions, so make reasonable decisions "
     "yourself. You have a time limit of about {minutes} minutes, so keep individual commands under ~8 minutes."
@@ -283,7 +287,9 @@ def run_trial(
     model: str = "sonnet",
     timeout_min: float = 45,
     tag: str = "",
+    untimed: bool = False,
 ) -> Path:
+    """``untimed``: the prompt states no time limit; ``timeout_min`` is only a hidden safety cap."""
     spec = json.loads((tasks / task / "task.json").read_text())
     tdir = trials / f"{task}-{condition}{('-' + tag) if tag else ''}"
     if tdir.exists():
@@ -311,7 +317,9 @@ def run_trial(
     which = subprocess.run(
         ["which", "trainwright", "python"], env=env, capture_output=True, text=True
     ).stdout
-    prompt = spec["prompt"] + AUTONOMY.format(minutes=int(max(10, timeout_min - 5)))
+    prompt = spec["prompt"] + (
+        UNTIMED if untimed else AUTONOMY.format(minutes=int(max(10, timeout_min - 5)))
+    )
     cmd = [
         "claude",
         "-p",
@@ -575,6 +583,7 @@ def batch(
     timeout_min: float,
     only: list[str] | None = None,
     prefix: str = "b",
+    untimed: bool = False,
 ) -> None:
     """Resumable: runs every (task, condition, rep) without a .meta.json, at most max_trials this call."""
     jobs = []
@@ -591,7 +600,14 @@ def batch(
     from concurrent.futures import ThreadPoolExecutor
 
     with ThreadPoolExecutor(parallel) as ex:
-        list(ex.map(lambda j: run_trial(tasks, trials, j[0], j[1], model, timeout_min, j[2]), jobs))
+        list(
+            ex.map(
+                lambda j: run_trial(
+                    tasks, trials, j[0], j[1], model, timeout_min, j[2], untimed=untimed
+                ),
+                jobs,
+            )
+        )
 
 
 def main() -> None:
@@ -615,6 +631,11 @@ def main() -> None:
     b.add_argument("--timeout-min", type=float, default=30)
     b.add_argument("--only", nargs="*", default=None, help="task names to include")
     b.add_argument("--prefix", default="b", help="trial tag prefix, e.g. r8-")
+    b.add_argument(
+        "--untimed",
+        action="store_true",
+        help="no time limit in the prompt; --timeout-min becomes a hidden safety cap",
+    )
     p = sub.add_parser("prepare")
     p.add_argument("--datasets", type=Path, default=ROOT / "scratch" / "datasets")
     p.add_argument("--out", type=Path, default=ROOT / "scratch" / "tasks")
@@ -656,6 +677,7 @@ def main() -> None:
             a.timeout_min,
             a.only,
             a.prefix,
+            a.untimed,
         )
     elif a.cmd == "prepare":
         prepare(a.datasets, a.out, only=a.only)
