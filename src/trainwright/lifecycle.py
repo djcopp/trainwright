@@ -52,6 +52,7 @@ def status(project: Project) -> dict[str, Any]:
         else []
     )
 
+    tabular = project.config.modality == "tabular"
     steps = [
         _step(
             "profile",
@@ -73,8 +74,11 @@ def status(project: Project) -> dict[str, Any]:
             "baselines",
             bool(baselines),
             f"{len(baselines)} baseline run(s)",
-            "trainwright auto --budget 15m",
-            "baselines plus the strong recipes for this modality, ensemble and finalize",
+            "trainwright errors" if tabular else "trainwright auto --budget 15m",
+            "seconds: where a fast model fails, plus candidate features it built and measured; "
+            "test your own with `trainwright try`, then `auto`"
+            if tabular
+            else "baselines plus the strong recipes for this modality, ensemble and finalize",
         ),
         _step(
             "train",
@@ -90,10 +94,9 @@ def status(project: Project) -> dict[str, Any]:
             "iterate",
             len(neural) >= 3,
             f"{len(neural)} neural runs, {n_with_hyp} with a hypothesis",
-            f"trainwright diagnose {best_neural['id']}"
-            if best_neural
-            else "trainwright diagnose latest",
-            "run 2+ deliberate follow-up experiments chosen from the diagnosis (change one thing at a time)",
+            "trainwright errors best",
+            "read the leader's worst mistakes; test a fix with `trainwright try` (tabular) or a "
+            "targeted run (change one thing at a time)",
         )
     )
     test_runs = sorted({e["run"] for e in ledger})
