@@ -1049,6 +1049,125 @@ def features(ref: str = typer.Argument("best-neural"), repeats: int = typer.Opti
 
 
 @app.command()
+def errors(
+    ref: str = typer.Argument(
+        "proxy", help="proxy (fast HistGBM on the current features.py, tabular) or a run id."
+    ),
+    candidates: bool = typer.Option(
+        True, help="Write and measure candidate features.py files (tabular)."
+    ),
+    seeds: int = typer.Option(2, help="Proxy seeds averaged per fit."),
+) -> None:
+    """Where the val errors are: hot slices, biased slices, confusions, worst rows, tested candidates."""
+    from .insight import error_report
+
+    STATE["command"] = "errors"
+    project = _project()
+    project.load_user_plugins()
+    if ref == "proxy" and project.config.modality != "tabular":
+        ref = "best"  # no fast proxy for text/images: analyse the leader's val predictions
+    res = error_report(project, None if ref == "proxy" else ref, candidates, seeds)
+    m = res["metric"]
+    lines = [f"{res['source']}: val {m}={res['score']:.4f} on {res['n_val']} rows"]
+    if res.get("hot_slices"):
+        lines.append("loss concentrates in (share of loss vs share of rows):")
+        for r in res["hot_slices"]:
+            extra = (
+                f"error {r['error_rate']:.3f} vs {r['error_rate_elsewhere']:.3f}"
+                if "error_rate" in r
+                else f"rmse {r['rmse']:.4g} vs {r['rmse_elsewhere']:.4g}"
+            )
+            lines.append(
+                f"  {r['column']} = {r['slice']}: {r['share_of_loss']:.0%} of loss, "
+                f"{r['share_of_rows']:.0%} of rows ({extra})"
+            )
+    if res.get("biased_slices"):
+        lines.append("systematic bias (mean prediction - target):")
+        for r in res["biased_slices"]:
+            lines.append(
+                f"  {r['column']} = {r['slice']}: {r['mean_error']:+.4g} over {r['rows']} rows (z {r['z']})"
+            )
+    if res.get("confusions"):
+        lines.append(
+            "most confused: "
+            + "; ".join(
+                f"{c['true']} -> {c['predicted']} ({c['count']})" for c in res["confusions"][:4]
+            )
+        )
+    lines.append("worst rows:")
+    for r in res["worst_rows"][:5]:
+        what = (
+            f"label {r['label']}, predicted {r['predicted']} ({r['confidence']:.2f})"
+            if "label" in r
+            else f"target {r['target']:.4g}, predicted {r['predicted']:.4g}"
+        )
+        hint = f'  "{r["text"][:90]}"' if "text" in r else f"  {r['path']}" if "path" in r else ""
+        lines.append(f"  {r['id']}: {what}{hint}")
+    lines.append(f"all val rows by loss: {_rel(res['rows_csv'])}")
+    nxt = []
+    if res["candidates"]:
+        lines.append("tested candidates (proxy, paired bootstrap on val):")
+        for c in res["candidates"]:
+            if "error" in c:
+                lines.append(f"  {c['name']:<24} failed: {c['error']}")
+                continue
+            lines.append(
+                f"  {c['name']:<24} gain {c['delta']:+.4f} ±{c['se']:.4f}  {c['verdict']}  # {c['hypothesis']}"
+            )
+            if c["verdict"] in ("better", "likely better"):
+                nxt.append({"command": c["command"], "why": c["hypothesis"]})
+    if project.config.modality == "tabular":
+        nxt.append(
+            {
+                "command": 'trainwright try my_features.py --hypothesis "..."',
+                "why": "test your own idea about the slices above in seconds",
+            }
+        )
+    emit(res, "\n".join(lines), nxt)
+
+
+@app.command("try")
+def try_(
+    candidate: Path | None = typer.Argument(None, help="A candidate features.py to compare."),
+    drop: str | None = typer.Option(None, help="Comma-separated columns to drop instead."),
+    hypothesis: str = typer.Option("", help="What you expect and why."),
+    keep: bool = typer.Option(
+        False, help="Promote the candidate to features.py if it is better on the proxy."
+    ),
+    seeds: int = typer.Option(2, help="Proxy seeds averaged per fit."),
+) -> None:
+    """Test a feature idea in seconds: proxy val score of features.py vs a candidate (tabular)."""
+    from .insight import try_features
+
+    STATE["command"] = "try"
+    project = _project()
+    cols = [c.strip() for c in drop.split(",")] if drop else None
+    res = try_features(project, candidate, cols, hypothesis, keep, seeds)
+    m = res["metric"]
+    lines = [
+        f"{res['candidate']}: val {m} {res['current']:.4f} -> {res['candidate_score']:.4f} "
+        f"(gain {res['delta']:+.4f} ±{res['se']:.4f}, {res['verdict']}; proxy, {res['seconds']}s)",
+    ]
+    if res["kept"]:
+        lines.append(
+            "kept: features.py replaced (previous version in .trainwright/features-history/)"
+        )
+    elif keep:
+        lines.append(f"not kept: {res['not_kept_reason']}")
+    nxt = (
+        [
+            {
+                "command": "trainwright auto --budget 10m --background",
+                "why": "retrain on the new features",
+            }
+        ]
+        if res["kept"]
+        else [{"command": "trainwright errors", "why": "look for the next idea"}]
+    )
+    emit(res, "\n".join(lines), nxt)
+
+
+@app.command()
 def evaluate(
     ref: str = typer.Argument("best"),
     split_: str = typer.Option("val", "--split", help="val (free) or test (final, recorded)."),

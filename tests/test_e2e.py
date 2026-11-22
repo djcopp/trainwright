@@ -503,3 +503,45 @@ def test_torch_and_onnx_predictions_match(tabular_project):
             for a, b in zip(out["torch"], out["onnx"])
         ]
         assert max(diffs) < 1e-4
+
+
+def test_errors_finds_group_structure_and_try_promotes_it(tmp_path):
+    import pandas as pd
+    from conftest import TW
+
+    rng = np.random.default_rng(5)
+    users, per = 120, 20
+    user = np.repeat(np.arange(users), per)
+    offset = rng.normal(scale=3.0, size=users)[user]
+    x = offset + rng.normal(size=users * per)
+    x2 = offset + rng.normal(size=users * per)
+    y = np.where(x - offset + 0.3 * rng.normal(size=users * per) > 0, "up", "down")
+    df = pd.DataFrame({"user": user, "x": x, "x2": x2, "noise": rng.normal(size=len(y)), "y": y})
+    df.to_csv(tmp_path / "d.csv", index=False)
+    tw = TW(tmp_path)
+    tw("init", "--data", "d.csv", "--target", "y")
+    tw("split")
+    rep = tw("errors", "--seeds", "1")["result"]
+    assert rep["worst_rows"] and (tmp_path / ".trainwright" / "val_errors.csv").exists()
+    cand = next(c for c in rep["candidates"] if c["name"] == "group_user")
+    assert cand["verdict"] == "better" and cand["delta"] > 0.05
+    kept = tw("try", cand["file"], "--keep", "--seeds", "1", "--hypothesis", "relative x")
+    assert kept["result"]["kept"] and (tmp_path / "features.py").exists()
+    # with the statistics in features.py, errors stops proposing them
+    again = tw("errors", "--seeds", "1")["result"]
+    assert again["score"] >= cand["delta"] + rep["score"] - 1e-9
+    assert not any(c["name"] == "group_user" for c in again["candidates"])
+    dropped = tw("try", "--drop", "x,x_minus_user_mean,x_user_z", "--seeds", "1")["result"]
+    assert dropped["verdict"] == "worse" and not dropped["kept"]
+    trials = (tmp_path / ".trainwright" / "feature_trials.jsonl").read_text().splitlines()
+    assert len(trials) == 2
+
+
+def test_errors_on_a_regression_run_reports_slices(regression_project):
+    tw = regression_project
+    tw("init", "--data", "houses.csv", "--target", "price")
+    tw("split")
+    rid = tw("baseline", "--only", "hist_gbm")["result"]["runs"][0]
+    rep = tw("errors", rid, "--no-candidates")["result"]
+    assert rep["source"].startswith("run ") and rep["worst_rows"]
+    assert "hot_slices" in rep and "biased_slices" in rep
