@@ -33,7 +33,7 @@ DESCRIPTIONS = {
     "hist_gbm": "scikit-learn HistGradientBoosting (<=1000 rounds, early stopping, native categoricals): strong for tables",
     "gbm_tuned": "HistGradientBoosting tuned on val over 12 configurations, best one averaged over 3 seeds",
     "tfidf_linear": "TF-IDF word 1-2 grams + logistic/ridge regression (strong for text)",
-    "tfidf_tuned": "TF-IDF (words, or words + characters 2-5) + logistic/ridge, regularisation tuned on val",
+    "tfidf_tuned": "TF-IDF words + characters 2-5 -> calibrated linear SVM (ridge for regression), C tuned on val",
     "pixels_linear": "logistic/ridge regression on 16x16 downsampled pixels",
 }
 
@@ -182,34 +182,41 @@ def _tune_gbm(
     return make_pipeline(clone(ct), vote)
 
 
-def _tfidf_pipeline(task: str, chars: bool, strength: float) -> Any:
+def _tfidf_pipeline(task: str, strength: float, calibrate: bool = True, cv: int = 3) -> Any:
+    """TF-IDF words (1-2) + characters (2-5) -> calibrated linear SVM, or ridge for regression."""
+    from sklearn.calibration import CalibratedClassifierCV
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.linear_model import LogisticRegression, Ridge
     from sklearn.pipeline import FeatureUnion, make_pipeline
+    from sklearn.svm import LinearSVC
 
-    words = TfidfVectorizer(ngram_range=(1, 2), min_df=2, max_features=200_000, sublinear_tf=True)
-    vec: Any = words
-    if chars:
-        vec = FeatureUnion(
-            [
-                ("w", words),
-                (
-                    "c",
-                    TfidfVectorizer(
-                        analyzer="char_wb",
-                        ngram_range=(2, 5),
-                        min_df=2,
-                        max_features=300_000,
-                        sublinear_tf=True,
-                    ),
+    vec = FeatureUnion(
+        [
+            (
+                "w",
+                TfidfVectorizer(
+                    ngram_range=(1, 2), min_df=2, max_features=200_000, sublinear_tf=True
                 ),
-            ]
-        )
-    est = (
-        LogisticRegression(max_iter=3000, C=strength)
-        if task == "classification"
-        else Ridge(alpha=strength)
+            ),
+            (
+                "c",
+                TfidfVectorizer(
+                    analyzer="char_wb",
+                    ngram_range=(2, 5),
+                    min_df=2,
+                    max_features=300_000,
+                    sublinear_tf=True,
+                ),
+            ),
+        ]
     )
+    if task != "classification":
+        return make_pipeline(vec, Ridge(alpha=strength))
+    svc = LinearSVC(C=strength)
+    if calibrate and cv < 2:  # a class with one example can't be calibrated by folds
+        return make_pipeline(vec, LogisticRegression(C=4.0 * strength, max_iter=3000))
+    # sigmoid calibration on out-of-fold predictions; the final SVM is fitted on all the data
+    est = CalibratedClassifierCV(svc, method="sigmoid", cv=cv, ensemble=False) if calibrate else svc
     return make_pipeline(vec, est)
 
 
@@ -223,23 +230,34 @@ def _tune_tfidf(
     k: int,
     progress: Callable[[str], None] | None,
 ) -> Any:
-    """Pick words vs words+characters and the regularisation strength on val."""
+    """Pick the regularisation strength on val with a fast uncalibrated fit, then calibrate."""
     from .metrics import _single_metric, metric_mode
 
     sign = 1.0 if metric_mode(metric) == "max" else -1.0
-    grid = [1.0, 4.0, 16.0] if task == "classification" else [0.3, 1.0, 3.0]
-    best: tuple[bool, float] = (False, grid[1])
-    best_score = -np.inf
-    for chars in (False, True):
-        for strength in grid:
-            m = _tfidf_pipeline(task, chars, strength).fit(Xtr, ytr)
-            out = _proba_full(m, Xva, k) if task == "classification" else m.predict(Xva)
-            sc = sign * _single_metric(task, metric, np.asarray(yva), out, k)
-            if sc > best_score:
-                best, best_score = (chars, strength), sc
+    grid = [0.3, 1.0, 3.0]
+    best, best_score = grid[1], -np.inf
+    for strength in grid:
+        m = _tfidf_pipeline(task, strength, calibrate=False).fit(Xtr, ytr)
+        if task == "classification":
+            d = np.asarray(m.decision_function(Xva), dtype=np.float64)
+            if d.ndim == 1:  # binary: one margin -> two-column scores
+                d = np.stack([-d, d], 1)
+            full = np.full((len(d), k), -1e9)
+            full[:, np.asarray(m.classes_, dtype=int)] = d
+            z = np.exp(full - full.max(1, keepdims=True))
+            out = z / z.sum(1, keepdims=True)
+        else:
+            out = m.predict(Xva)
+        sc = sign * _single_metric(task, metric, np.asarray(yva), out, k)
+        if sc > best_score:
+            best, best_score = strength, sc
     if progress:
-        progress(f"tfidf_tuned: {'words + characters' if best[0] else 'words'}, strength {best[1]}")
-    return _tfidf_pipeline(task, *best)
+        progress(f"tfidf_tuned: words + characters, strength {best}")
+    cv = 3
+    if task == "classification":
+        counts = np.bincount(np.asarray(ytr, dtype=np.int64))
+        cv = min(3, int(counts[counts > 0].min()))
+    return _tfidf_pipeline(task, best, cv=cv)
 
 
 def _to_str_cats(df: Any, cat: list[str]) -> Any:
