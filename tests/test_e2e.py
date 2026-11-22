@@ -479,3 +479,27 @@ def test_guarded_step_is_killed_at_its_deadline(regression_project):
     t0 = time.time()
     res, err = _guarded(project, ["wait", "--timeout", "10m"], 1)
     assert res is None and "killed" in err and time.time() - t0 < 60
+
+
+def test_torch_and_onnx_predictions_match(tabular_project):
+    import csv
+
+    tw = tabular_project
+    tw("init", "--data", "data.csv")
+    tw("split")
+    tw("baseline", "--only", "dummy,hist_gbm")
+    tw("train", *FAST, "-o", "train.max_epochs=3", "-H", "a")
+    tw("train", *FAST, "-o", "train.max_epochs=3", "-o", "train.seed=1", "-H", "b")
+    bag = tw("bag", "003", "--folds", "2")["result"]["run"]  # multi-member path
+    for ref in ("003", bag, "002"):
+        out = {}
+        for engine in ("torch", "onnx"):
+            p = tw.root / f"p-{engine}.csv"
+            tw("predict", ref, "-i", "data.csv", "--out", str(p), "--engine", engine, "--no-final")
+            out[engine] = list(csv.DictReader(p.open()))
+        assert [r["prediction"] for r in out["torch"]] == [r["prediction"] for r in out["onnx"]]
+        diffs = [
+            abs(float(a["confidence"]) - float(b["confidence"]))
+            for a, b in zip(out["torch"], out["onnx"])
+        ]
+        assert max(diffs) < 1e-4

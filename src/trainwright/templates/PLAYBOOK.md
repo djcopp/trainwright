@@ -62,8 +62,10 @@ training). Spend the rest on what a search cannot do, rerunning `auto` after eac
 3. **Targeted experiments** on the leader, one hypothesis per run:
    `trainwright train --from-run <id> -o key=value --hypothesis "..."`; `trainwright tune --budget 10m`;
    `trainwright ensemble --seeds 3`. Read `trainwright diagnose <id>` and the curves.
-4. Then pick the leader on val (ties → simpler/cheaper), evaluate test once, `finalize` it if
-   `auto` didn't, and predict.
+4. Then pick the leader on val (ties → simpler/cheaper), evaluate test once and predict.
+   If `auto` reported it had no time to finalize, **predict with the best run as is**: refitting
+   a big image/text ensemble by hand can take longer than your remaining time. Leave a margin:
+   predictions must exist before your time runs out.
 
 Manual control is always available: `split`, `baseline`, `train`, `ensemble` and `finalize` are
 the same steps `auto` runs.

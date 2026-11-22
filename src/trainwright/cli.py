@@ -1335,6 +1335,11 @@ def predict(
         help="Comma-separated output columns for --out, e.g. 'prediction' or 'filename,prediction'. "
         "Available: id, filename (image basename), prediction, confidence.",
     ),
+    engine: str = typer.Option(
+        "auto",
+        help="auto: torch on the GPU/Apple Silicon when available (no export, much faster for "
+        "images/text), else the exported ONNX bundle; or force 'torch' / 'onnx'.",
+    ),
 ) -> None:
     """Predict with a run's exported bundle (exported automatically if needed).
 
@@ -1378,7 +1383,20 @@ def predict(
                     )
         except FileNotFoundError:
             pass  # a bundle directory path
-    pred = Predictor(_bundle_dir(project, target, auto_export=True))
+    pred: Any = None
+    if engine not in ("auto", "torch", "onnx"):
+        raise CLIError(f"--engine must be auto, torch or onnx (got {engine!r})")
+    from .local_predict import TorchPredictor, accelerator_available
+
+    if engine == "torch" or (engine == "auto" and accelerator_available()):
+        try:
+            from .leaderboard import resolve_ref as _resolve
+
+            pred = TorchPredictor(project, _resolve(project, target))
+        except FileNotFoundError:
+            pred = None  # a bundle directory: use the ONNX path
+    if pred is None:
+        pred = Predictor(_bundle_dir(project, target, auto_export=True))
     suf = input_.suffix.lower()
     ids: list[str]
     if input_.is_dir():
