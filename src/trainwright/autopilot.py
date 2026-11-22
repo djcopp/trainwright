@@ -51,19 +51,29 @@ LADDERS: dict[str, list[tuple[str, dict[str, Any], float, str]]] = {
         (
             "seg-probe",
             {"model.name": "seg_probe"},
-            0.25,
+            0.15,
             "autopilot: frozen DINOv2-small patch features + linear head (strong with few labels)",
+        ),
+        (
+            "seg-probe-base",
+            {
+                "model.name": "seg_probe",
+                "model.params.backbone": "dinov2_base",
+                "preprocess.image_size": 336,
+            },
+            0.20,
+            "autopilot: frozen DINOv2-base probe at 336px (richer features; FoodSeg 0.232 -> 0.261)",
         ),
         (
             "segmenter",
             {"model.name": "image_segmenter"},
-            0.35,
+            0.30,
             "autopilot: fine-tune LR-ASPP MobileNetV3 (fast, cheap to serve)",
         ),
         (
             "deeplab",
             {"model.name": "image_segmenter", "model.params.arch": "deeplabv3_resnet50"},
-            0.40,
+            0.35,
             "autopilot: fine-tune DeepLabV3-ResNet50 (slower, usually more accurate)",
         ),
     ],
