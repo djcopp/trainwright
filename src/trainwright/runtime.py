@@ -132,8 +132,9 @@ class Predictor:
         for x, lg in zip(instances, logits):
             src = _decode_image_input(x)
             size = (src if isinstance(src, Image.Image) else Image.open(src)).size
-            m = Image.fromarray(lg.argmax(0).astype(np.uint8))
-            masks.append(np.asarray(m.resize(size, Image.Resampling.NEAREST)))
+            masks.append(
+                _resize_logits(np.asarray(lg, dtype=np.float32), size).argmax(0).astype(np.uint8)
+            )
         return masks
 
     def predict(self, instances: list[Any], top_k: int = 3) -> list[dict[str, Any]]:
@@ -186,6 +187,26 @@ class Predictor:
             full[:, np.asarray(self.model.classes_, dtype=int)] = p
             return full
         return np.asarray(self.model.predict(X))
+
+
+def _resize_logits(lg: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    """Bilinear resize of [K, h, w] class scores to (width, height) before the argmax, so masks
+    from a coarse model keep smooth edges at the image's own size (numpy only)."""
+    _, h, w = lg.shape
+    W, H = size
+    if (h, w) == (H, W):
+        return lg
+
+    def axis(n_in: int, n_out: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        pos = (np.arange(n_out) + 0.5) * n_in / n_out - 0.5
+        lo = np.clip(np.floor(pos).astype(np.int64), 0, n_in - 1)
+        hi = np.clip(lo + 1, 0, n_in - 1)
+        return lo, hi, np.clip(pos - lo, 0.0, 1.0).astype(np.float32)
+
+    y0, y1, fy = axis(h, H)
+    x0, x1, fx = axis(w, W)
+    rows = lg[:, y0] * (1 - fy)[None, :, None] + lg[:, y1] * fy[None, :, None]
+    return rows[:, :, x0] * (1 - fx)[None, None, :] + rows[:, :, x1] * fx[None, None, :]
 
 
 def _providers(ort: Any) -> list[str]:
