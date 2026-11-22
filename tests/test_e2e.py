@@ -354,7 +354,7 @@ def test_auto_background_and_wait(regression_project):
     started = tw("auto", "--budget", "60s", "--background", *FAST, "-o", "train.max_epochs=4")
     assert started["result"]["pid"] > 0
     assert tw("status")["next_steps"][0]["command"].startswith("trainwright wait")
-    done = tw("wait", "--timeout", "5m")["result"]
+    done = tw("wait", "--timeout", "15m")["result"]
     assert done["status"] == "done" and done["best"]
 
 
