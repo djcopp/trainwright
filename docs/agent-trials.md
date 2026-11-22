@@ -67,6 +67,28 @@ The four losses:
 | superconduct | `auto` finished at 7.0 of 18 min (one seed replica) | 0.5.4: replicas added while the remaining budget covers finalize |
 | tweet_irony | roberta-base ran and was finalized (val AUC 0.861); 1.2 points on 690 tweets is within noise (SE ≈ 1.6) | not a bug |
 
+## Hard tasks, untimed (round 13, 0.7.0)
+
+No time limit in the prompt (a hidden 2 h safety cap); the agent finishes when `check` says
+done. Tasks built by [`bench/fetch_hard_tasks.py`](../bench/fetch_hard_tasks.py).
+
+| task | what makes it hard | metric | prompt only | trainwright | time (min) |
+|---|---|---|---|---|---|
+| airbnb_price | 74 messy columns, prices as text, amenity lists | RMSE ↓ | 85.2 | **81.7** | 6 vs 101 |
+| foodseg | 104 ingredient classes per pixel, 1.8k photos | mIoU | 0.141 | **0.207** | 74 vs 87 |
+| ledgar | 100 legal clause types | accuracy | **0.846** | 0.835 | 4 vs 113 |
+| retail_repeat | raw 650k-line sales log, entity features needed | accuracy | 0.734 | 0.734 | 2 vs 11 |
+
+What the transcripts and logs showed, and the fixes (0.7.1):
+
+| finding | fix |
+|---|---|
+| ledgar: the text encoder was killed at its cap, roberta-base ran out of GPU memory, so it shipped word TF-IDF; the prompt-only agent used words + characters with a linear SVM | `tfidf_tuned` (words + characters, calibrated linear SVM, C on val) in `auto` |
+| airbnb: tuned gradient boosting blended with the neural runs does the work (agent-free `auto` 81.8, same as with the agent); two bags cost 50 of 86 min for <0.2 RMSE | `gbm_tuned` in `auto`; bags only up to 20k rows; cheaper convergence rounds |
+| foodseg: two `auto` processes ran at once and their runs collided; the frozen-feature cache missed every epoch (float keys on the GPU) | an OS lock per project, race-safe run ids, exact cache keys |
+| retail: entity features had to be hand-built from the log | `trainwright rollup` |
+| no subagent tool in the harness, so no reviewer | `Task` allowed for both sides from round 14 |
+
 ## Without an agent
 
 **OpenML-CC18 + CTR23, pipeline vs early-stopped HistGBM, sealed test** (`bench/suite.py`, v0.4.2):
