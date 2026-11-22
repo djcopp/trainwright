@@ -1,17 +1,9 @@
 """Cross-validated bagging: k models on k folds of train+val, scored out-of-fold.
 
-On small datasets two things cost the most accuracy: a single validation split is too noisy to
-pick models with, and every model sees only ~70% of the labelled data. A bag fixes both:
-
-* train+val (the "dev" rows) are cut into k folds (stratified; duplicate groups, entity groups
-  stay within a fold). Model j trains on the other k-1 folds and early-stops on fold j.
-* every dev row gets an out-of-fold (OOF) prediction from the one model that never saw it. The
-  bag's ``val`` score is the OOF score on the frozen val rows, so it is directly comparable with
-  every other run on the leaderboard; ``oof`` is the (much less noisy) score over all dev rows.
-* the production model is the average of the k fold models, which together saw all of train+val:
-  ``finalize`` is free, and the average is itself a variance-reducing ensemble.
-
-The test split is never used. Fold runs are kind ``fold`` and hidden from the leaderboard.
+Fold j trains on the other folds and early-stops on fold j (stratified; duplicate and entity
+groups stay within a fold). The bag's ``val`` is the out-of-fold score on the frozen val rows, so
+it is comparable with other runs; ``oof`` covers all train+val rows. The fold models already saw
+train+val, so ``finalize`` is free. Fold runs are kind ``fold`` and hidden from the leaderboard.
 """
 
 from __future__ import annotations

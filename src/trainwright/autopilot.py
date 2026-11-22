@@ -1,19 +1,8 @@
-"""``trainwright auto``: the whole modelling lifecycle in one time-budgeted command.
+"""``trainwright auto``: the whole lifecycle in one time-boxed command.
 
-Agents under a time limit get the most out of a strong, standard search that the tool runs end
-to end, which leaves their own effort for what a tool cannot do: understanding the data, writing
-``features.py``, spotting leakage and judging whether the result is good enough to ship.
-
-The plan, each step skipped if already done (so ``auto`` is safe to rerun after edits):
-
-1. profile (auto-drops id-like/constant columns) and freeze the split
-2. reference baselines for the modality
-3. a short, modality-specific ladder of strong neural recipes, each with its own time cap
-4. seed replicas of the best neural recipe when time allows (cheap variance reduction)
-5. a greedy val-weighted ensemble over everything
-6. finalize the val-best model on train+val, so ``trainwright predict`` serves it
-
-The test split is never touched here: evaluate it once yourself at the end.
+profile -> split -> baselines -> recipe ladder -> tune/bag/seed replicas -> ensemble -> finalize.
+Steps already current for the split and ``features.py`` are skipped, so reruns are cheap. Heavy
+steps run in subprocesses with hard deadlines. The test split is never touched.
 """
 
 from __future__ import annotations
@@ -347,10 +336,9 @@ def _autopilot(
     project.ensure_dirs()
     if not project.profile_path.exists():
         prof = profile_project(project)
-        note(
-            "profiled data"
-            + (f"; auto-dropped {prof['auto_dropped']}" if prof.get("auto_dropped") else "")
-        )
+        dropped = prof.get("auto_dropped") or []
+        shown = ", ".join(dropped[:5]) + (f" +{len(dropped) - 5} more" if len(dropped) > 5 else "")
+        note("profiled data" + (f"; dropped id-like/constant columns: {shown}" if dropped else ""))
         for leak in (prof.get("tabular") or {}).get("leakage_suspects", []):
             note(f"LEAK? {leak['column']}: {leak['why']} (check before trusting any score)")
     sp, created = ensure_split(project)
@@ -431,7 +419,7 @@ def _autopilot(
                 f"tune failed: {err}"
                 if res is None
                 else f"tune: {len(res.get('trials', []))} trials in {fmt_seconds(spare)}; best neural "
-                f"now {b2['id'] if b2 else '?'} val_{m}={(b2 or {}).get(f'val_{m}')}"
+                f"now {b2['id'] if b2 else '?'} val_{m}={float((b2 or {}).get(f'val_{m}') or 'nan'):.4f}"
             )
 
     # cross-validated bag of the best neural recipe: k models on train+val, out-of-fold val

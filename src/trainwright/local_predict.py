@@ -1,10 +1,7 @@
-"""Fast in-project predictions with torch on the training device (GPU / Apple Silicon).
+"""In-project predictions with torch on the training device (GPU / Apple Silicon).
 
-``trainwright predict`` inside a project used to export every model to ONNX and run it on the
-CPU. For big image or text ensembles that can take longer than training (eurosat: an ensemble
-of fine-tuned CNNs and DINOv2 probes over 4k holdout images). This predictor loads the runs'
-checkpoints directly and reuses the runtime's preprocessing, so outputs match the exported
-bundle while running on the accelerator. Deployment still uses the ONNX bundle.
+Loads run checkpoints directly and reuses the runtime's preprocessing, so outputs match the
+exported ONNX bundle without exporting. Deployment still uses the bundle.
 """
 
 from __future__ import annotations
