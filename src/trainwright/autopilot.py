@@ -250,6 +250,56 @@ def _finalize_cost(run_row: dict[str, Any], project: Project) -> float:
     return t * frac * 1.25  # +val data, no per-epoch val pass saved
 
 
+def _feature_step(
+    project: Project, split_hash: str, budget_s: float, note: Callable[[str], None]
+) -> dict[str, Any]:
+    """Once per split: test the candidates `errors` writes and adopt clear wins (z > 2).
+
+    Returns overrides for the neural runs (a log target). Runs in guarded subprocesses, so a
+    slow or failing candidate costs at most its deadline.
+    """
+    from ._utils import read_json
+    from .featurehook import FeatureHook
+
+    def sha() -> str | None:
+        hook = FeatureHook.from_project(project.root)
+        return hook.sha if hook is not None else None
+
+    mark = project.state_dir / "auto_features.json"
+    if mark.exists():
+        prev = read_json(mark)
+        if prev.get("split_hash") == split_hash and prev.get("features_sha") == sha():
+            return dict(prev.get("overrides") or {})
+    cap = min(180.0, 0.1 * budget_s)
+    rep, err = _guarded(project, ["errors", "--seeds", "1"], cap)
+    overrides: dict[str, Any] = {}
+    if rep is None:
+        note(f"feature search skipped: {err}")
+    else:
+        wins = [c for c in rep.get("candidates", []) if c.get("verdict") == "better"]
+        for c in wins:
+            if c["name"] == "log_target":
+                overrides["preprocess.target_transform"] = "log1p"
+                note(f"adopted log1p target (proxy gain {c['delta']:+.4g} ±{c['se']:.2g})")
+        groups = [c for c in wins if c.get("file")]
+        if groups:
+            best = groups[0]
+            kept, err = _guarded(project, ["try", best["file"], "--keep", "--seeds", "2"], cap)
+            if kept and kept.get("kept"):
+                note(
+                    f"adopted {best['name']} into features.py (proxy gain "
+                    f"{kept['delta']:+.4g} ±{kept['se']:.2g}): {best['hypothesis']}. Valid only if "
+                    "predictions are for groups seen in training; otherwise set data.group_column"
+                )
+            elif err:
+                note(f"{best['name']} not adopted: {err}")
+        if not wins:
+            tested = ", ".join(c["name"] for c in rep.get("candidates", [])) or "none applicable"
+            note(f"feature search: no clear win ({tested}); see `trainwright errors`")
+    write_json(mark, {"split_hash": split_hash, "features_sha": sha(), "overrides": overrides})
+    return overrides
+
+
 def autopilot(
     project: Project,
     budget_s: float,
@@ -258,6 +308,7 @@ def autopilot(
     seeds: bool = True,
     progress: Say | None = print,
     bag: bool = True,
+    features: bool = True,
 ) -> dict[str, Any]:
     """Run the search; records running/done/failed in .trainwright/auto.json for `wait`/`status`."""
     import os
@@ -265,7 +316,7 @@ def autopilot(
 
     t0 = time.time()
     try:
-        res = _autopilot(project, budget_s, overrides, finish, seeds, progress, bag)
+        res = _autopilot(project, budget_s, overrides, finish, seeds, progress, bag, features)
     except BaseException as e:
         write_json(
             state_path(project),
@@ -292,6 +343,7 @@ def _autopilot(
     seeds: bool = True,
     progress: Say | None = print,
     bag: bool = True,
+    features: bool = True,
 ) -> dict[str, Any]:
     import os
 
@@ -344,6 +396,10 @@ def _autopilot(
     sp, created = ensure_split(project)
     if created:
         note(f"froze {sp['strategy']} split {sp['counts']}")
+
+    if features and cfg.modality == "tabular":
+        for ov_key, ov_val in _feature_step(project, sp["split_hash"], budget_s, note).items():
+            overrides.setdefault(ov_key, ov_val)
 
     from .featurehook import FeatureHook
 

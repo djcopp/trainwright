@@ -714,6 +714,9 @@ def auto(
     seeds: bool = typer.Option(
         True, help="Add seed replicas of the best neural recipe if time allows."
     ),
+    features: bool = typer.Option(
+        True, help="Test the candidate features `errors` proposes and adopt clear wins (tabular)."
+    ),
     background: bool = typer.Option(
         False,
         "--background",
@@ -744,6 +747,7 @@ def auto(
         args += [x for o in override for x in ("-o", o)]
         args += [] if finish else ["--no-finish"]
         args += [] if seeds else ["--no-seeds"]
+        args += [] if features else ["--no-features"]
         lp = log_path(project)
         # the child writes its progress to auto.log itself; raw stdout/stderr (tracebacks) go here
         with (project.state_dir / "auto.stdout.log").open("a") as f:
@@ -777,7 +781,9 @@ def auto(
             ],
         )
         return
-    res = autopilot(project, budget_s, ov, finish=finish, seeds=seeds, progress=progress)
+    res = autopilot(
+        project, budget_s, ov, finish=finish, seeds=seeds, progress=progress, features=features
+    )
     rows = leaderboard(project)
     best = res.get("best") or {}
     lines = ["", format_table(rows, project.config.metric)]
