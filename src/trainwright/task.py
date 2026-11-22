@@ -197,10 +197,20 @@ class RegressionTask(Task):
         )
 
 
+def match_resolution(logits: torch.Tensor, y: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Coarser logits than the mask: downsample the mask (nearest), which is far cheaper than
+    upsampling K-channel logits; finer logits: upsample them to the mask."""
+    if logits.shape[-2:] == y.shape[-2:]:
+        return logits, y
+    if logits.shape[-2] < y.shape[-2]:
+        small = F.interpolate(y.unsqueeze(1).float(), size=logits.shape[-2:], mode="nearest")
+        return logits, small.squeeze(1).long()
+    return F.interpolate(logits, size=y.shape[-2:], mode="bilinear", align_corners=False), y
+
+
 def confusion_rows(logits: torch.Tensor, y: torch.Tensor, k: int) -> torch.Tensor:
     """Per-image confusion counts [B, K*K] (true * K + predicted), ignoring label 255."""
-    if logits.shape[-2:] != y.shape[-2:]:
-        logits = F.interpolate(logits, size=y.shape[-2:], mode="bilinear", align_corners=False)
+    logits, y = match_resolution(logits, y)
     pred = logits.argmax(1)
     b = y.shape[0]
     valid = y != 255
@@ -225,10 +235,7 @@ class SegmentationTask(Task):
         self.label_smoothing = label_smoothing
 
     def loss(self, outputs: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        if outputs.shape[-2:] != y.shape[-2:]:
-            outputs = F.interpolate(
-                outputs, size=y.shape[-2:], mode="bilinear", align_corners=False
-            )
+        outputs, y = match_resolution(outputs, y)
         return F.cross_entropy(
             outputs.float(), y, ignore_index=255, label_smoothing=self.label_smoothing
         )

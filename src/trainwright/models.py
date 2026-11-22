@@ -743,4 +743,5 @@ class SegProbe(nn.Module):
                     self._cache[keys[i]] = row
             fmap = torch.stack([self._cache[k] for k in keys]).to(x.device)
         logits = self.head(fmap.float())
-        return F.interpolate(logits, size=(h, w), mode="bilinear", align_corners=False)
+        # 4x the patch grid: enough detail for a linear probe, and 12x fewer logits than full size
+        return F.interpolate(logits, size=(gh * 4, gw * 4), mode="bilinear", align_corners=False)
