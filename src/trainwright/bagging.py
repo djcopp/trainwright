@@ -209,6 +209,9 @@ def build_bag(
     )
     write_json(run.diagnosis_path, {"verdict": "bag", "findings": [], "next_experiments": []})
     run.set_status("completed")
+    # same recipe, more data, k-model average: the bag replaces its parent for selection and
+    # ensembling (its out-of-fold val is a single-model estimate, so it under-states the bag)
+    base.update_meta(superseded_by=run.id)
     say(
         f"bag {run.id}: val_{m}={metrics[m]:.4f} ±{se:.4f} (out-of-fold), "
         f"oof_{m} over {len(y) + len(ytr)} rows = {oof_all[m]:.4f}"

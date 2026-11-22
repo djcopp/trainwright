@@ -131,6 +131,7 @@ def build_ensemble(
             if r.get("same_split") is not False
             and r["kind"] in ("neural", "baseline", "bag")
             and r.get("model") != "baseline:dummy"
+            and not r.get("superseded_by")
             and r.get(f"val_{m}") is not None
             and not (cfg.modality == "image" and r["kind"] == "baseline")
         ]

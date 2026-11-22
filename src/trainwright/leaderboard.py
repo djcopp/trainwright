@@ -29,6 +29,7 @@ def run_row(run: Run, metric: str, current_split: str | None) -> dict[str, Any]:
         "epochs_run": summ.get("epochs_run"),
         "stop_reason": summ.get("stop_reason"),
         "same_split": (meta.get("split_hash") == current_split) if current_split else None,
+        "superseded_by": meta.get("superseded_by"),
     }
     if "loss" in val:
         row["val_loss"] = val["loss"]
@@ -92,7 +93,9 @@ def best_run(project: Project, kind: str | None = None) -> dict[str, Any] | None
     rows = [
         r
         for r in leaderboard(project, kind=kind)
-        if r.get("same_split") is not False and r.get(f"val_{project.config.metric}") is not None
+        if r.get("same_split") is not False
+        and r.get(f"val_{project.config.metric}") is not None
+        and not r.get("superseded_by")
     ]
     return rows[0] if rows else None
 
@@ -123,6 +126,8 @@ def format_table(rows: list[dict[str, Any]], metric: str, limit: int = 30) -> st
         params = f"{r['n_params'] / 1e6:.2f}M" if r.get("n_params") else "-"
         t = f"{r['train_time_s']:.0f}s" if r.get("train_time_s") is not None else "-"
         diag = ",".join(r.get("findings") or []) or (r.get("diagnosis") or "-")
+        if r.get("superseded_by"):
+            diag = f"bagged -> {r['superseded_by']}"
         flag = "" if r.get("same_split") in (True, None) else " (old split)"
         cells = [
             str(r["rank"]) + ("≈" if r.get("tied_with_leader") else ""),
@@ -144,4 +149,9 @@ def format_table(rows: list[dict[str, Any]], metric: str, limit: int = 30) -> st
     out += ["  ".join(c.ljust(w) for c, w in zip(cells, widths)) for cells in lines]
     if any(r.get("tied_with_leader") for r in rows[:limit]):
         out.append("≈ = within 2 standard errors of #1: the difference is likely noise")
+    if any(r.get("kind") == "bag" for r in rows[:limit]):
+        out.append(
+            "bag val = out-of-fold (a single-model estimate); the deployed k-model average is "
+            "usually better, so a bag replaces the run it copies ('best' skips that run)"
+        )
     return "\n".join(out)
