@@ -79,15 +79,28 @@ Requires Python 3.10+. CUDA, Apple Silicon (MPS) and CPU are detected automatica
 
 ```bash
 trainwright init --data tickets.csv --target intent    # infer task, modality and metric
-trainwright profile                                    # data checks and recommendations
-trainwright split                                      # freeze train / val / test
-trainwright baseline                                   # reference models on the same split
-trainwright train --hypothesis "default recipe"        # first neural run
-trainwright diagnose latest                            # findings and suggested next runs
-trainwright evaluate best --split test --reason "final model"
-trainwright finalize best                              # production model on all usable data
-trainwright export <final-run> && trainwright benchmark <final-run>
+trainwright profile                                    # data checks: leaks, duplicates, group keys
+trainwright auto --budget 20m                          # the whole search, finalized (see below)
+trainwright evaluate best --split test --reason "final model"   # the one honest number
+trainwright predict -i new.csv --out predictions.csv   # serves the finalized model
+trainwright export final && trainwright benchmark final
 ```
+
+`trainwright auto` runs the full lifecycle on a time budget, skipping any step that is already up to date:
+
+1. freeze a duplicate-aware split;
+2. fit reference baselines;
+3. run a short ladder of strong recipes for the modality:
+   - **tables:** MLPs with and without periodic embeddings, plus a recipe search;
+   - **images:** DINOv2 probes and a fine-tuned CNN;
+   - **text:** bge-small and roberta-base;
+4. build a cross-validated bag of the tabular leader, or seed replicas;
+5. build a greedy ensemble;
+6. finalize the winner on train+val.
+
+Pass `--background` and then `trainwright wait` to run it longer than your shell or agent tool
+timeout. Every step is also available on its own: `split`, `baseline`, `train`, `tune`, `bag`,
+`ensemble`, `finalize`.
 
 Run `trainwright status` at any point to see where the project stands and what to do next.
 
@@ -152,11 +165,13 @@ To use it over MCP instead, register the server with `claude mcp add trainwright
 |---|---|
 | `init` | Create a project from a CSV/Parquet file, image folder or manifest. |
 | `profile` | Types, missingness, leakage suspects, duplicates, entity keys, imbalance, recommendations. |
+| `auto`, `wait` | The whole search on a time budget, finalized; `--background` then `wait` for long budgets. |
 | `split` | Freeze the duplicate-aware train / val / test split. |
 | `baseline` | Dummy, linear, gradient-boosting, TF-IDF or pixel baselines on the same split. |
 | `train` | Train a model; `--from-run` and `-o key=value` for controlled follow-ups. |
 | `diagnose` | Curve diagnosis with ready-to-run next experiments. |
 | `tune` | Successive-halving search around the best recipe. |
+| `bag` | Cross-validated bag of a recipe: k fold models on train+val, scored out-of-fold. |
 | `ensemble` | Greedy-weighted ensemble of top runs, optionally with seed replicas. |
 | `features` | Permutation feature importance on val (tabular). |
 | `runs`, `show`, `status` | Leaderboard with standard errors, run details, lifecycle checklist. |
