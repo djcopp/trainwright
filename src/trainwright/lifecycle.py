@@ -67,14 +67,14 @@ def status(project: Project) -> dict[str, Any]:
             f"{split['strategy']} split {split['counts']} (hash {split_hash})"
             if split
             else "no frozen split",
-            "trainwright auto --budget 15m",
+            "trainwright auto --background",
             "one command: freeze the split, baselines, strong recipes, ensemble, finalize (stops on time)",
         ),
         _step(
             "baselines",
             bool(baselines),
             f"{len(baselines)} baseline run(s)",
-            "trainwright errors" if tabular else "trainwright auto --budget 15m",
+            "trainwright errors" if tabular else "trainwright auto --background",
             "seconds: where a fast model fails, plus candidate features it built and measured; "
             "test your own with `trainwright try`, then `auto`"
             if tabular
@@ -84,7 +84,7 @@ def status(project: Project) -> dict[str, Any]:
             "train",
             bool(neural),
             f"{len(neural)} neural run(s)",
-            "trainwright auto --budget 15m",
+            "trainwright auto --background",
             "train the strong default recipes for this modality (or `trainwright train` by hand)",
         ),
     ]

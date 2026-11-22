@@ -371,6 +371,48 @@ def status() -> None:
 
 
 @app.command()
+def check() -> None:
+    """Definition of done: what is still missing before this project is finished."""
+    from .done import check as _check
+    from .done import format_check
+
+    STATE["command"] = "check"
+    res = _check(_project())
+    nxt = [
+        {"command": i["fix"], "why": i["detail"]}
+        for i in res["items"]
+        if i["status"] == "fail" and i["fix"]
+    ]
+    if res["done"]:
+        nxt.append(
+            {
+                "command": "spawn a reviewer subagent with this output, `trainwright runs` and your report",
+                "why": "an independent check that claims match the records and nothing obvious was missed",
+            }
+        )
+    emit(res, format_check(res), nxt[:4])
+
+
+@app.command()
+def decide(
+    topic: str = typer.Argument(
+        ..., help="deployment | features | search | model | leak:<column> | anything else"
+    ),
+    reason: str = typer.Argument(..., help="The decision and the evidence for it."),
+) -> None:
+    """Record a judgement call (read by `check` and by reviewers)."""
+    from .done import record_decision
+
+    STATE["command"] = "decide"
+    d = record_decision(_project(), topic, reason)
+    emit(
+        d,
+        f"recorded {d['topic']}: {d['reason']}",
+        [{"command": "trainwright check", "why": "see what is left"}],
+    )
+
+
+@app.command()
 def guide() -> None:
     """Print the agent playbook (rules, the loop, what to try per modality)."""
     STATE["command"] = "guide"
@@ -461,7 +503,7 @@ def profile(
         "\n".join(lines),
         [
             {
-                "command": "trainwright auto --budget 15m",
+                "command": "trainwright auto --background",
                 "why": "after fixing data.drop / group_column / features.py: split, baselines, strong "
                 "recipes, ensemble and finalize in one time-boxed command",
             }
@@ -704,7 +746,11 @@ def tune(
 
 @app.command()
 def auto(
-    budget: str = typer.Option("20m", help="Total wall-clock budget, e.g. 10m, 1h."),
+    budget: str | None = typer.Option(
+        None,
+        help="Optional hard ceiling, e.g. 10m, 1h. Default: keep going while new rounds improve "
+        "on the best result by more than noise (safety cap 2h).",
+    ),
     override: list[str] = typer.Option(
         [], "-o", "--override", help="key=value applied to every neural run (repeatable)."
     ),
@@ -736,14 +782,15 @@ def auto(
     STATE["command"] = "auto"
     project = _project()
     project.load_user_plugins()
-    budget_s = parse_duration(budget) or 1200.0
+    budget_s = (parse_duration(budget) or 1200.0) if budget else None
     ov = dict(parse_override(o) for o in override)
     if background:
         st = read_state(project)
         if st and st.get("status") == "running":
             raise CLIError(f"auto is already running (pid {st['pid']}): `trainwright wait`")
         project.ensure_dirs()
-        args = [sys.executable, "-m", "trainwright", "auto", "--budget", f"{int(budget_s)}s"]
+        args = [sys.executable, "-m", "trainwright", "auto"]
+        args += ["--budget", f"{int(budget_s)}s"] if budget_s else []
         args += [x for o in override for x in ("-o", o)]
         args += [] if finish else ["--no-finish"]
         args += [] if seeds else ["--no-seeds"]
@@ -756,23 +803,25 @@ def auto(
             )
         import time as _time
 
-        from .autopilot import state_path
+        from .autopilot import SAFETY_CAP_S, state_path
 
         now = _time.time()  # written now so `status`/`wait` see it before the child starts up
+        cap = budget_s or SAFETY_CAP_S
         write_json(
             state_path(project),
             {
                 "status": "running",
                 "pid": proc.pid,
                 "started": now,
-                "deadline": now + budget_s,
-                "budget_s": budget_s,
+                "deadline": now + cap,
+                "budget_s": cap,
+                "mode": "budget" if budget_s else "converge",
             },
         )
+        how = f"budget {fmt_seconds(budget_s)}" if budget_s else "until results stop improving"
         emit(
             {"pid": proc.pid, "log": str(lp), "budget_s": budget_s},
-            f"auto started in the background (pid {proc.pid}, budget {fmt_seconds(budget_s)}); "
-            f"log: {_rel(lp)}",
+            f"auto started in the background (pid {proc.pid}, {how}); log: {_rel(lp)}",
             [
                 {
                     "command": "trainwright wait --timeout 7m",
@@ -1163,7 +1212,7 @@ def try_(
     nxt = (
         [
             {
-                "command": "trainwright auto --budget 10m --background",
+                "command": "trainwright auto --background",
                 "why": "retrain on the new features",
             }
         ]
@@ -1583,6 +1632,15 @@ def predict(
         w = csv.writer(f)
         w.writerow(cols)
         w.writerows([cell(k, r, c) for c in cols] for k, r in enumerate(rows))
+    try:  # record it for `trainwright check` when run inside a project
+        from .project import Project as _P
+
+        write_json(
+            _P.find().state_dir / "predictions.json",
+            {"path": _rel(out_path), "n": len(rows), "model": str(target)},
+        )
+    except Exception:
+        pass
     emit(
         {"path": str(out_path), "n": len(rows), "model": target},
         f"wrote {len(rows)} predictions to {_rel(out_path)} (model {target})",

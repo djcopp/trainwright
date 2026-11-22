@@ -545,3 +545,31 @@ def test_errors_on_a_regression_run_reports_slices(regression_project):
     rep = tw("errors", rid, "--no-candidates")["result"]
     assert rep["source"].startswith("run ") and rep["worst_rows"]
     assert "hot_slices" in rep and "biased_slices" in rep
+
+
+def test_check_lists_what_is_missing_until_done(regression_project):
+    tw = regression_project
+    tw("init", "--data", "houses.csv", "--target", "price")
+
+    def status():
+        res = tw("check")["result"]
+        return res["done"], {i["item"]: i["status"] for i in res["items"]}
+
+    done, items = status()
+    assert not done and items["profile"] == "fail"
+    tw("profile")
+    tw("split")
+    tw("baseline", "--only", "dummy,hist_gbm")
+    done, items = status()
+    assert items["profile"] == "pass" and items["error analysis"] == "fail"
+    assert items["search"] == "fail" and items["finalized"] == "fail" and items["test"] == "fail"
+    tw("errors", "--no-candidates", "--seeds", "1")
+    for col in ("x1", "x2", "x3"):
+        tw("try", "--drop", col, "--seeds", "1")
+    tw("decide", "search", "gradient boosting only: this test checks the checklist, not the model")
+    best = tw("runs")["result"][0]["id"]
+    tw("finalize", best)
+    tw("evaluate", best, "--split", "test", "--reason", "final")
+    done, items = status()
+    assert done, items
+    assert items["error analysis"] == "pass" and items["search"] == "pass"

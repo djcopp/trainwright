@@ -300,9 +300,13 @@ def _feature_step(
     return overrides
 
 
+SAFETY_CAP_S = 7200.0  # without --budget, auto runs until converged; this only stops runaways
+MAX_ROUNDS = 4
+
+
 def autopilot(
     project: Project,
-    budget_s: float,
+    budget_s: float | None,
     overrides: dict[str, Any] | None = None,
     finish: bool = True,
     seeds: bool = True,
@@ -315,8 +319,12 @@ def autopilot(
     import traceback
 
     t0 = time.time()
+    converge = budget_s is None
+    budget_s = budget_s or SAFETY_CAP_S
     try:
-        res = _autopilot(project, budget_s, overrides, finish, seeds, progress, bag, features)
+        res = _autopilot(
+            project, budget_s, overrides, finish, seeds, progress, bag, features, converge
+        )
     except BaseException as e:
         write_json(
             state_path(project),
@@ -330,7 +338,8 @@ def autopilot(
         state_path(project),
         {"status": "done", "pid": os.getpid(), "started": t0, "finished": time.time(),
          "budget_s": budget_s, "best": (res.get("best") or {}).get("id"),
-         "final": res.get("final")},
+         "final": res.get("final"), "stopped": res.get("stopped"),
+         "mode": "converge" if converge else "budget"},
     )  # fmt: skip
     return res
 
@@ -344,10 +353,11 @@ def _autopilot(
     progress: Say | None = print,
     bag: bool = True,
     features: bool = True,
+    converge: bool = False,
 ) -> dict[str, Any]:
     import os
 
-    from .baselines import BASELINES, run_baselines
+    from .baselines import run_baselines
     from .leaderboard import best_run, leaderboard
     from .pipeline import ensure_split, get_records
     from .tracking import Run, list_runs
@@ -474,7 +484,7 @@ def _autopilot(
             note(
                 f"tune failed: {err}"
                 if res is None
-                else f"tune: {len(res.get('trials', []))} trials in {fmt_seconds(spare)}; best neural "
+                else f"tune: {len(res.get('trials', []))} trials in {fmt_seconds(float(res.get('elapsed_s') or 0))}; best neural "
                 f"now {b2['id'] if b2 else '?'} val_{m}={float((b2 or {}).get(f'val_{m}') or 'nan'):.4f}"
             )
 
@@ -562,8 +572,66 @@ def _autopilot(
         m = cfg.metric
         note(f"ensemble {summ.get('model')}: val_{m}={summ['val'][m]:.4f}")
 
+    # without a budget: more rounds (tune around the leader, bag the new best recipe, re-blend)
+    # while each round beats the leader by more than its standard error
+    stopped = "budget"
+    if converge:
+        stopped = "converged"
+        if cfg.modality != "tabular":
+            note("recipe ladder complete")
+        for rnd in range(1, MAX_ROUNDS + 1) if cfg.modality == "tabular" else ():
+            lead, bn = best_run(project), best_run(project, kind="neural")
+            if lead is None or bn is None or not current(bn):
+                break
+            before = float(lead[f"val_{m}"])
+            se = float(lead.get("val_se") or 0.0)
+            per = float(bn.get("train_time_s") or 0.0) + 5
+            tb = min(max(120.0, per * 8 * 3), left() * 0.5)
+            if tb < 6 * per:
+                stopped = "safety cap"
+                note("stopped: the safety cap is close")
+                break
+            res, err = _guarded(
+                project,
+                ["tune", "--budget", f"{int(tb)}s", "--from-run", bn["id"], "--trials", "8"],
+                tb * 1.3 + 120,
+            )
+            if res is None:
+                note(f"round {rnd} tune failed: {err}")
+                break
+            new_best = best_run(project, kind="neural")
+            if (
+                bag
+                and new_best is not None
+                and new_best["id"] != bn["id"]
+                and not cfg.data.time_column
+                and n_rows <= 100_000
+                and left() > 5 * per * 1.3
+            ):
+                cap = left() * 0.6
+                _guarded(
+                    project,
+                    ["bag", new_best["id"], "--folds", "5", "--budget", f"{int(cap)}s"],
+                    cap * 1.3 + 120,
+                )
+            _guarded(project, ["ensemble", "--top", "8"], max(60.0, 0.1 * budget_s) + 120)
+            after_row = best_run(project) or lead
+            after = float(after_row[f"val_{m}"])
+            gain = sign * (after - before)
+            note(
+                f"round {rnd}: best val_{m} {before:.4f} -> {after:.4f} "
+                f"(gain {gain:+.4f}, noise ±{se:.4f})"
+            )
+            if gain <= se:
+                note("converged: the last round did not beat the leader by more than noise")
+                break
+        else:
+            if cfg.modality == "tabular":
+                stopped = "round limit"
+                note(f"stopped after {MAX_ROUNDS} rounds that all still improved")
+
     best = best_run(project)
-    result: dict[str, Any] = {"best": best, "log": log}
+    result: dict[str, Any] = {"best": best, "log": log, "stopped": stopped}
     if best is None:
         return result
     m = cfg.metric
