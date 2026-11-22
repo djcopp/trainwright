@@ -236,6 +236,64 @@ and 0.933**, against the control's 0.931 and 0.937. That's a statistical tie (di
 Averaged over tasks: +1.8% on the primary metric, the worst run +5.7% better, and a median
 13.5% fewer errors.
 
+## The 101-dataset suite (LLM-free, v0.4.2 pipeline)
+
+`bench/suite.py` ran trainwright's individual steps (profile → split → baselines → default MLP →
+ensemble, winner picked on val) on 101 OpenML-CC18/CTR23 datasets and scored the pick on each sealed
+test split against early-stopped HistGradientBoosting. The pick was better on 63 of 98 scored datasets
+(25 exact ties, mostly where the pick *was* HistGBM), median +0.6%, median classification error −4.8%.
+Three datasets crashed. Two causes: HistGBM rejects categoricals with more than 255 levels,
+and quantile interpolation on denormal floats produced NaN.
+
+What the suite exposed, and what changed:
+
+* **The MLP was starved on small data.** With batch 256, a 768-row table got about 160 optimiser
+  steps in total. `train.min_steps` (default 2000 for tables) now raises the epoch count and the patience
+  together. On energy_efficiency, val RMSE went from 1.30 to 0.63.
+* **Periodic numeric embeddings by default.** `bench/variants.py` compares recipes across 76 suite
+  datasets on **val only**. Against HistGBM: old default beats it on 49/76 (−3.5% mean), +min_steps
+  51/76, +min_steps +periodic **58/76 (+4.7% mean)**. Periodic loses on tiny noisy sets and on
+  smooth targets (naval −37%), so `auto` also trains the plain MLP and keeps whichever is better on val.
+* Targets that are a linear sum of columns (wave_energy, brazilian_houses) are now flagged by
+  `profile`: either leakage or a relation the linear baseline will win.
+
+## Round 8 (v0.5.0: `trainwright auto`, 8 new tasks)
+
+The bold change: instead of coaching the agent through a dozen commands, `trainwright auto
+--budget` runs the whole search itself and finalizes the result. It runs profile, split,
+baselines, a short ladder of strong recipes for the modality, seed replicas, a greedy ensemble
+and finalize, and it reruns only the steps that are stale. The playbook now tells agents to spend
+their own effort on the data, leakage, features and the deployment decision.
+
+New tasks span modality, size and difficulty (`bench/fetch_tasks.py`), one run per condition:
+
+| task | data | straight prompt | trainwright 0.5.0 |
+|---|---|---|---|
+| app_reviews | text → star rating (regression), 20k | RMSE 1.077 | **0.991** |
+| bike_sharing | hourly demand (regression), 17k | RMSE 40.1 | **36.0** |
+| eurosat | 64px satellite tiles, 10 classes, 27k | acc 0.976 | **0.985** |
+| mercedes | 377 anonymised columns (regression), 4.2k | RMSE 8.32 | **8.24** |
+| miniboone | physics signal vs background, 130k | acc 0.946 | **0.949** |
+| telco_churn | imbalanced customer table, 7k | acc 0.773 (F1 0.742) | **acc 0.789** (F1 0.702) |
+| beans | leaf-disease photos, 1.3k | **0.954** | 0.949 |
+| tweet_irony | irony detection, 4.6k | **0.761** | 0.742 |
+
+trainwright is ahead on 6 of 8 (primary metric). Agent cost per task: $0.13–0.28 vs $0.07–0.18.
+
+### Changes made because of round 8
+
+* **Agents ran `auto` for only 3–12 minutes** of a 40-minute limit (their tool calls are capped at
+  ~8 minutes) and `auto` itself finished early on small data (mercedes: 1.5 of 12 minutes).
+  `auto --background` + `trainwright wait --timeout 7m` let the search run for most of the session, and
+  spare tabular budget now goes to a successive-halving recipe search around the leader.
+* **tweet_irony:** the control fine-tuned roberta-base (125M) and won on nuance. The text ladder now adds
+  roberta-base after bge-small (dev test accuracy 0.742 → 0.760).
+* Agents always reformatted `predict` output by hand: `predict --columns prediction` writes exactly the
+  requested CSV. Negative bike counts: regression predictions are clipped to the training range.
+* `image_probe` caches the frozen DINOv2 features (~18x faster epochs), and `auto` adds a DINOv2-base probe.
+* **Cross-validated bagging** (`trainwright bag`, and inside `auto` for tables): k fold models on
+  train+val, scored out of fold. The bag replaces the single run it copies.
+
 ## Next: scale
 
 Four datasets are too few for firm claims. `bench/suite.py` runs trainwright's automated pipeline,
