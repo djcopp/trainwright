@@ -375,3 +375,29 @@ def test_bag_scores_out_of_fold_and_finalizes_for_free(tabular_project):
     tw("export", final["run"])
     pred = tw("predict", final["run"], "-i", "data.csv", "--limit", "3")["result"]
     assert len(pred) == 3
+
+
+def test_date_strings_are_expanded_into_features(tmp_path):
+    import pandas as pd
+    from conftest import TW
+
+    rng = np.random.default_rng(3)
+    n = 1500
+    ts = pd.Timestamp("2023-01-01") + pd.to_timedelta(rng.integers(0, 365 * 24, n), unit="h")
+    y = 10 * (ts.dayofweek >= 5) + 0.5 * ts.hour + rng.normal(scale=0.5, size=n)
+    df = pd.DataFrame(
+        {"when": ts.strftime("%Y-%m-%d %H:%M:%S"), "noise": rng.normal(size=n), "y": y}
+    )
+    df.to_csv(tmp_path / "d.csv", index=False)
+    tw = TW(tmp_path)
+    tw("init", "--data", "d.csv", "--target", "y")
+    prof = tw("profile")["result"]
+    assert prof["date_columns"] == {"when": "iso"}
+    tw("split")
+    base = tw("baseline", "--only", "dummy,hist_gbm")["result"]["leaderboard"]
+    gbm = next(r for r in base if r["model"] == "baseline:hist_gbm")
+    dummy = next(r for r in base if r["model"] == "baseline:dummy")
+    assert gbm["val_rmse"] < 0.3 * dummy["val_rmse"]  # weekday/hour recovered from the string
+    rid = tw("train", *FAST, "-o", "train.max_epochs=3", "-H", "dates")["result"]["run"]
+    pred = tw("predict", rid, "-i", "d.csv", "--limit", "2")["result"]
+    assert len(pred) == 2

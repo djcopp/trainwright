@@ -147,6 +147,14 @@ def _apply_corrections(recs: Records, root: Path, rel: str) -> Records:
 
 def _load_table_like(path: Path, cfg: ProjectConfig) -> Records:
     df = read_table(path)
+    if cfg.data.date_columns and cfg.modality == "tabular":
+        from ..preprocessing import expand_dates
+
+        cols = {c: df[c].tolist() for c in cfg.data.date_columns if c in df.columns}
+        derived = {
+            k: v for k, v in expand_dates(cols, cfg.data.date_columns).items() if k not in cols
+        }
+        df = pd.concat([df, pd.DataFrame(derived, index=df.index)], axis=1)
     target = cfg.data.target
     if not target or target not in df.columns:
         raise ValueError(

@@ -573,3 +573,79 @@ class TargetScaler:
         obj.mean, obj.std = s["mean"], s["std"]
         obj.lo, obj.hi = s.get("lo"), s.get("hi")
         return obj
+
+
+# --------------------------------------------------------------------------- dates
+
+DATE_FORMATS = [
+    "iso",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y/%m/%d",
+    "%m/%d/%Y",
+    "%d/%m/%Y",
+    "%m/%d/%Y %H:%M",
+    "%d/%m/%Y %H:%M",
+    "%d-%m-%Y",
+    "%d.%m.%Y",
+    "%b %d, %Y",
+    "%d %b %Y",
+]
+DATE_PARTS = ("year", "month", "day", "weekday", "hour", "dayofyear", "ts")
+
+
+def _parse_date(v: Any, fmt: str) -> Any:
+    from datetime import datetime
+
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        if fmt == "iso":
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return datetime.strptime(s, fmt)
+    except ValueError:
+        return None
+
+
+def detect_date_format(values: list[Any], min_share: float = 0.95) -> str | None:
+    """A strptime format (or 'iso') that parses nearly all non-empty values, else None."""
+    sample = [str(v).strip() for v in values if v is not None and str(v).strip()][:500]
+    if len(sample) < 5 or not all(any(c in s for c in "-/.: ") for s in sample[:50]):
+        return None
+    if all(s.replace(".", "", 1).lstrip("-").isdigit() for s in sample[:50]):
+        return None  # plain numbers are not dates
+    for fmt in DATE_FORMATS:
+        ok = sum(_parse_date(s, fmt) is not None for s in sample)
+        if ok >= min_share * len(sample):
+            return fmt
+    return None
+
+
+def expand_dates(columns: dict[str, Any], spec: dict[str, str]) -> dict[str, Any]:
+    """Add ``<col>__<part>`` float columns for each date column in ``spec`` (raw column kept)."""
+    from datetime import datetime, timezone
+
+    out = dict(columns)
+    for col, fmt in spec.items():
+        if col not in columns:
+            continue
+        parsed = [_parse_date(v, fmt) for v in columns[col]]
+        for part in DATE_PARTS:
+            vals = []
+            for d in parsed:
+                if d is None:
+                    vals.append(np.nan)
+                elif part == "ts":
+                    if d.tzinfo is not None:
+                        d = d.astimezone(timezone.utc).replace(tzinfo=None)
+                    vals.append((d - datetime(1970, 1, 1)).total_seconds())
+                elif part == "weekday":
+                    vals.append(float(d.weekday()))
+                elif part == "dayofyear":
+                    vals.append(float(d.timetuple().tm_yday))
+                else:
+                    vals.append(float(getattr(d, part)))
+            out[f"{col}__{part}"] = np.asarray(vals, dtype=np.float64)
+    return out

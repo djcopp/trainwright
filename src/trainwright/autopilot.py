@@ -113,6 +113,32 @@ def profile_project(project: Project, keep_ids: bool = False) -> dict[str, Any]:
     prof["data_fingerprint"] = records.fingerprint
     cfg = project.config
     auto_dropped: list[str] = []
+    if "tabular" in prof:
+        # date/time text columns become numeric parts (year, month, weekday, hour, ...)
+        from .preprocessing import detect_date_format
+
+        found: dict[str, str] = {}
+        for c, p in prof["tabular"]["columns"].items():
+            if p.get("kind") == "datetime-like string" and c not in cfg.data.date_columns:
+                if c in (cfg.data.target, cfg.data.time_column):
+                    continue
+                fmt = (
+                    detect_date_format(records.table[c].tolist())
+                    if records.table is not None
+                    else None
+                )
+                if fmt:
+                    found[c] = fmt
+        if found:
+            cfg.data.date_columns = {**cfg.data.date_columns, **found}
+            project.save()
+            prof["date_columns"] = found
+            prof["recommendations"].insert(
+                0,
+                f"Expanded date columns {sorted(found)} into year/month/day/weekday/hour/dayofyear/ts "
+                "features (data.date_columns). Consider data.time_column for a chronological split "
+                "if you will predict the future.",
+            )
     if "tabular" in prof and not keep_ids:
         for c, p in prof["tabular"]["columns"].items():
             if c not in cfg.data.drop and any(

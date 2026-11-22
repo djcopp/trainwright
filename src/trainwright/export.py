@@ -164,6 +164,7 @@ def export_run(
         "modality": cfg.modality,
         "task": cfg.task,
         "classes": split.get("classes"),
+        "date_columns": dict(cfg.data.date_columns),
         "primary_metric": cfg.metric,
         "val_metrics": held_out.summary.get("val"),
         "metrics_from_run": held_out.id,
