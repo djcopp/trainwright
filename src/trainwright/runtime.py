@@ -66,7 +66,7 @@ class Predictor:
             opts.intra_op_num_threads = threads
             opts.inter_op_num_threads = 1
         self.session = ort.InferenceSession(
-            str(self.dir / "model.onnx"), opts, providers=["CPUExecutionProvider"]
+            str(self.dir / "model.onnx"), opts, providers=_providers(ort)
         )
         self.input_names = [i.name for i in self.session.get_inputs()]
 
@@ -163,6 +163,22 @@ class Predictor:
             full[:, np.asarray(self.model.classes_, dtype=int)] = p
             return full
         return np.asarray(self.model.predict(X))
+
+
+def _providers(ort: Any) -> list[str]:
+    """GPU execution providers when onnxruntime-gpu offers one, CPU otherwise.
+
+    Override with TW_ORT_PROVIDERS, e.g. "CPUExecutionProvider" or
+    "CUDAExecutionProvider,CPUExecutionProvider".
+    """
+    import os
+
+    env = os.environ.get("TW_ORT_PROVIDERS")
+    if env:
+        return [p.strip() for p in env.split(",") if p.strip()]
+    avail = set(ort.get_available_providers())
+    gpu = [p for p in ("CUDAExecutionProvider", "ROCMExecutionProvider") if p in avail]
+    return [*gpu, "CPUExecutionProvider"]
 
 
 def _decode_image_input(x: Any) -> Any:

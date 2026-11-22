@@ -73,7 +73,24 @@ pip install "trainwright[all]"
 | `label` | LLM labelling via the Anthropic API |
 | `mcp` | Model Context Protocol server |
 
-Requires Python 3.10+. CUDA, Apple Silicon (MPS) and CPU are detected automatically.
+Requires Python 3.10+.
+
+### Hardware
+
+trainwright runs on whatever is available and picks sensible defaults for it.
+
+| | training (`train.device=auto`) | mixed precision (`train.precision=auto`) | serving (exported bundle) |
+|---|---|---|---|
+| NVIDIA GPU | `cuda` (choose one with `train.device=cuda:1`) | bf16 on Ampere+, fp16 + gradient scaling on older cards | CUDA execution provider if `onnxruntime-gpu` is installed |
+| AMD GPU (ROCm build of PyTorch) | `cuda` | as above | ROCm execution provider if available |
+| Apple Silicon | `mps` | bf16 for models over 5M parameters, after a capability check | CPU |
+| CPU only | `cpu` | fp32 | CPU |
+
+Time budgets (`--budget`, `train.time_budget`) adapt to the speed of the machine they run on. A slower
+machine trains fewer epochs with a compressed LR schedule, so it doesn't stop half-way through one.
+Force serving to a provider with `TW_ORT_PROVIDERS=CPUExecutionProvider`.
+Training uses a single device (no multi-GPU data parallelism): the models trainwright targets
+train in minutes on one GPU.
 
 ## Quickstart
 
