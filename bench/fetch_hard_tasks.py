@@ -122,7 +122,8 @@ def airbnb_price() -> None:
         "picture_url", "host_url", "host_thumbnail_url", "host_picture_url",
         "calendar_last_scraped",
     ]  # fmt: skip
-    df = df.drop(columns=[c for c in drop if c in df.columns])
+    # newer scrapes add price_quote_* columns that restate the price: a target leak
+    df = df.drop(columns=[c for c in df.columns if c in drop or c.startswith("price_quote")])
     df = df.sample(n=min(40_000, len(df)), random_state=SEED).reset_index(drop=True)
     hide = df.sample(frac=0.15, random_state=SEED).index
     d = _task_dir("airbnb_price")
