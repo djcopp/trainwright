@@ -653,15 +653,10 @@ def expand_dates(columns: dict[str, Any], spec: dict[str, str]) -> dict[str, Any
 
 # --------------------------------------------------------------------------- text columns in tables
 
-_TOKEN_RE = None
+_TOKEN_RE = re.compile(r"(?u)\b\w\w+\b")  # scikit-learn's default token pattern
 
 
 def _word_ngrams(text: str, n: int = 2) -> list[str]:
-    import re
-
-    global _TOKEN_RE
-    if _TOKEN_RE is None:
-        _TOKEN_RE = re.compile(r"(?u)\b\w\w+\b")  # scikit-learn's default token pattern
     toks = _TOKEN_RE.findall(text.lower())
     out = list(toks)
     for k in range(2, n + 1):

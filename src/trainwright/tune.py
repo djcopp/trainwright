@@ -32,6 +32,7 @@ SPACES: dict[str, dict[str, list[Any]]] = {
         "model.params.hidden": [128, 256, 512],
         "model.params.depth": [2, 3, 4],
         "model.params.num_embedding": ["none", "periodic"],
+        "model.params.k_ensemble": [1, 1, 16],  # TabM-mini: helps on some datasets, neutral on average
         "train.batch_size": [128, 256, 512],
     },
     "image": {

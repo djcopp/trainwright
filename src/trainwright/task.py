@@ -52,7 +52,8 @@ class Task(nn.Module):
             loss = torch.stack(
                 [self.loss(out[:, j], batch["y"]) for j in range(out.shape[1])]
             ).mean()
-            return {"loss": loss, "outputs": self.model.aggregate(out).detach()}
+            agg = self.model.aggregate(out)  # type: ignore[operator]
+            return {"loss": loss, "outputs": agg.detach()}
         return {"loss": self.loss(out, batch["y"]), "outputs": out.detach()}
 
     def validation_step(self, batch: Batch) -> dict[str, torch.Tensor]:
