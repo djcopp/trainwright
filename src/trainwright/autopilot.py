@@ -513,8 +513,11 @@ def _autopilot(
     if cfg.modality == "tabular" and bn is not None and current(bn):
         per = float(bn.get("train_time_s") or 0.0) + 5
         spare = left() * 0.55
-        if spare > 6 * per and spare > 60:
-            args = ["tune", "--budget", f"{int(spare)}s", "--from-run", bn["id"], "--trials", "8"]
+        # successive halving costs ~1.5 full runs per trial: fewer trials when time is short
+        n_trials = int(min(8, spare / (1.5 * per)))
+        if n_trials >= 3 and spare > 60:
+            args = ["tune", "--budget", f"{int(spare)}s", "--from-run", bn["id"]]
+            args += ["--trials", str(n_trials)]
             res, err = _guarded(project, args, spare * 1.3 + 120)
             b2 = best_run(project, kind="neural")
             m = cfg.metric
