@@ -398,6 +398,53 @@ def status() -> None:
 
 
 @app.command()
+def rollup(
+    events: Path = typer.Option(..., help="Event log: CSV/Parquet, one row per event."),
+    key: str = typer.Option(..., help="Entity id column in the events (customer, user...)."),
+    time: str = typer.Option(..., help="Event timestamp column."),
+    out: Path = typer.Option(..., "--out", "-o", help="Feature table to write (CSV/Parquet)."),
+    entities: Path | None = typer.Option(
+        None, help="Table to join the features onto (e.g. labelled customers); keeps its rows."
+    ),
+    entity_key: str | None = typer.Option(None, help="Id column in --entities (default: --key)."),
+    cutoff: str | None = typer.Option(
+        None, help="Use only events before this time (default: after the last event)."
+    ),
+    expr: list[str] = typer.Option(
+        [], help="Derived event column, e.g. 'revenue=Quantity*Price' (repeatable)."
+    ),
+    where: str | None = typer.Option(
+        None, help="pandas query to keep events, e.g. 'Quantity > 0'."
+    ),
+) -> None:
+    """Event log -> one row of features per entity (counts, recency, windows, numeric stats).
+
+    Use it when the data is a log of transactions/sessions and predictions are per customer/user.
+    Run it again with the same arguments on fresh events at prediction time."""
+    from .rollup import rollup_files
+
+    STATE["command"] = "rollup"
+    info = rollup_files(events, key, time, out, entities, entity_key, cutoff, expr, where)
+    msg = (
+        f"wrote {info['rows']} rows x {info['columns']} columns to {_rel(out)} "
+        f"({info['events_used']} events before {info['cutoff']}; numeric {info['numeric_columns']}, "
+        f"categorical {info['categorical_columns']})"
+    )
+    if info.get("entities_without_events"):
+        msg += f"; {info['entities_without_events']} entities have no events before the cutoff"
+    emit(
+        info,
+        msg,
+        [
+            {
+                "command": f"trainwright init --data {out} --target <label column>",
+                "why": "train on one row per entity",
+            }
+        ],
+    )
+
+
+@app.command()
 def check() -> None:
     """Definition of done: what is still missing before this project is finished."""
     from .done import check as _check

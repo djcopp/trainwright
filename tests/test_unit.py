@@ -458,3 +458,23 @@ def test_runtime_prefers_gpu_providers(monkeypatch):
     assert _providers(FakeOrt) == ["CUDAExecutionProvider", "CPUExecutionProvider"]
     monkeypatch.setenv("TW_ORT_PROVIDERS", "CPUExecutionProvider")
     assert _providers(FakeOrt) == ["CPUExecutionProvider"]
+
+
+def test_rollup_uses_only_events_before_the_cutoff():
+    import pandas as pd
+
+    from trainwright.rollup import rollup
+
+    ev = pd.DataFrame(
+        {
+            "user": ["a", "a", "a", "b", "b"],
+            "t": ["2024-01-01", "2024-03-01", "2024-06-01", "2024-02-01", "2024-02-02"],
+            "qty": [1, 2, 100, 3, 4],
+            "price": [10.0, 10.0, 10.0, 1.0, 1.0],
+        }
+    )
+    feats, info = rollup(ev, "user", "t", pd.Timestamp("2024-05-01"), ["rev=qty*price"])
+    a = feats.set_index("user").loc["a"]
+    assert info["events_used"] == 4  # the June event is after the cutoff
+    assert a["n_events"] == 2 and a["qty_max"] == 2 and a["rev_sum"] == 30.0
+    assert round(a["days_since_last"]) == 61 and a["n_events_90d"] == 1
