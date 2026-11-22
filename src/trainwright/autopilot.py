@@ -451,19 +451,20 @@ def _autopilot(
     if todo:
         run_baselines(project, todo, progress=None)
         note(f"baselines: {', '.join(todo)}")
-    if cfg.modality == "tabular" and "baseline:gbm_tuned" not in done_models:
-        # a tuned GBM is a strong, different model family for the final blend
+    # a tuned classical model is a strong, different family for the final blend
+    tuned = {"tabular": "gbm_tuned", "text": "tfidf_tuned"}.get(cfg.modality)
+    if tuned and cfg.task != "segmentation" and f"baseline:{tuned}" not in done_models:
         cap = min(0.2 * budget_s, 900.0)
-        res, err = _guarded(project, ["baseline", "--only", "gbm_tuned"], cap)
+        res, err = _guarded(project, ["baseline", "--only", tuned], cap)
         if res is None:
-            note(f"gbm_tuned skipped: {err}")
+            note(f"{tuned} skipped: {err}")
         else:
             row = next(
-                (r for r in res.get("leaderboard", []) if r.get("model") == "baseline:gbm_tuned"),
+                (r for r in res.get("leaderboard", []) if r.get("model") == f"baseline:{tuned}"),
                 None,
             )
             m = cfg.metric
-            note(f"gbm_tuned: val_{m}={float((row or {}).get(f'val_{m}') or float('nan')):.4f}")
+            note(f"{tuned}: val_{m}={float((row or {}).get(f'val_{m}') or float('nan')):.4f}")
 
     hyps = {r.get("hypothesis") for r in rows}
     n_rows = len(get_records(project).y)
