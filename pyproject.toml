@@ -1,6 +1,6 @@
 [project]
 name = "trainwright"
-version = "0.5.4"
+version = "0.6.0"
 description = "An agent-first PyTorch framework for training small, task-specific models with a disciplined ML lifecycle: profile, split, baseline, train, diagnose, evaluate, export, serve."
 readme = "README.md"
 license = "Apache-2.0"
