@@ -871,15 +871,23 @@ def wait(
 def bag(
     ref: str = typer.Argument("best-neural", help="Run whose recipe to bag."),
     folds: int = typer.Option(5, help="Number of folds (= models in the bag)."),
+    budget: str | None = typer.Option(None, help="Total time cap for all folds, e.g. 10m."),
 ) -> None:
     """Cross-validated bag: k copies of a recipe on k folds of train+val, scored out-of-fold."""
+    from ._utils import parse_duration
     from .bagging import build_bag
     from .leaderboard import format_table, leaderboard
 
     STATE["command"] = "bag"
     project = _project()
     project.load_user_plugins()
-    run = build_bag(project, ref, k=folds, progress=progress)
+    run = build_bag(
+        project,
+        ref,
+        k=folds,
+        time_budget_s=parse_duration(budget) if budget else None,
+        progress=progress,
+    )
     rows = leaderboard(project)
     emit(
         {"run": run.id, "summary": run.summary},
@@ -1159,14 +1167,25 @@ def ensemble(
     refs: list[str] = typer.Argument(None, help="Member runs (default: the top runs on val)."),
     top: int = typer.Option(6, help="Candidate pool: this many top runs on val."),
     seeds: int = typer.Option(1, help="Also train N-1 seed replicas of the best neural run first."),
+    replica_budget: str | None = typer.Option(
+        None, help="Time cap per seed replica, e.g. 2m (default: the base run's own settings)."
+    ),
 ) -> None:
     """Average the best runs' calibrated predictions; recorded as a run that competes on the leaderboard."""
+    from ._utils import parse_duration
     from .ensemble import build_ensemble
     from .leaderboard import format_table, leaderboard
 
     STATE["command"] = "ensemble"
     project = _project()
-    run = build_ensemble(project, refs or None, top, seeds, progress=progress)
+    run = build_ensemble(
+        project,
+        refs or None,
+        top,
+        seeds,
+        progress=progress,
+        replica_budget_s=parse_duration(replica_budget) if replica_budget else None,
+    )
     if run is None:
         emit(
             {"run": None},

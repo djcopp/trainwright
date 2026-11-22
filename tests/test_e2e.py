@@ -457,3 +457,25 @@ def test_text_columns_in_tables_become_features(tmp_path):
     tw("export", rid)
     pred = tw("predict", rid, "-i", "w.csv", "--limit", "3")["result"]
     assert len(pred) == 3
+
+
+def test_guarded_step_is_killed_at_its_deadline(regression_project):
+    import os
+    import time
+
+    from trainwright._utils import write_json
+    from trainwright.autopilot import _guarded, state_path
+    from trainwright.project import Project
+
+    tw = regression_project
+    tw("init", "--data", "houses.csv", "--target", "price")
+    project = Project.load(tw.root)
+    project.ensure_dirs()
+    # a "running" auto owned by this (alive) process: `wait` would block for 10 minutes
+    write_json(
+        state_path(project),
+        {"status": "running", "pid": os.getpid(), "deadline": time.time() + 999},
+    )
+    t0 = time.time()
+    res, err = _guarded(project, ["wait", "--timeout", "10m"], 1)
+    assert res is None and "killed" in err and time.time() - t0 < 60

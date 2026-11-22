@@ -181,6 +181,66 @@ def profile_project(project: Project, keep_ids: bool = False) -> dict[str, Any]:
     return prof
 
 
+def _guarded(
+    project: Project, args: list[str], timeout_s: float
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Run one trainwright command in its own process with a hard deadline.
+
+    A step that overruns or hangs (a stuck accelerator, a model too big for the machine) is
+    killed and its half-finished runs are marked failed, so the search always moves on and
+    always reaches finalize with the best result found so far. -> (result, error)
+    """
+    import json
+    import os
+    import signal
+    import subprocess
+    import sys
+
+    from .tracking import list_runs
+
+    started = time.time()
+    with (project.state_dir / "auto.stdout.log").open("a") as err:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "trainwright", "--json", *args],
+            cwd=project.root,
+            stdout=subprocess.PIPE,
+            stderr=err,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            out, _ = proc.communicate(timeout=max(30.0, timeout_s))
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()
+            proc.communicate()
+            for r in list_runs(project.runs_dir):
+                if r.meta.get("status") == "running" and r.dir.stat().st_mtime >= started - 5:
+                    r.update_meta(
+                        error=f"killed by auto: exceeded its {fmt_seconds(timeout_s)} cap"
+                    )
+                    r.set_status("failed")
+            return None, f"killed after {fmt_seconds(timeout_s)} (over its time cap)"
+    start = out.rfind("\n{\n") + 1 if "\n{\n" in out else out.find("{")
+    try:
+        blob = json.loads(out[start:]) if start >= 0 else {}
+    except json.JSONDecodeError:
+        blob = {}
+    if not blob.get("ok"):
+        return None, str(blob.get("error") or f"exit code {proc.returncode}")[:300]
+    return blob.get("result") or {}, None
+
+
+def _ov_args(ov: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for k, v in ov.items():
+        val = "null" if v is None else (str(v).lower() if isinstance(v, bool) else str(v))
+        out += ["-o", f"{k}={val}"]
+    return out
+
+
 def _finalize_cost(run_row: dict[str, Any], project: Project) -> float:
     """Rough seconds to refit a run on train+val (members summed for ensembles)."""
     from .tracking import Run
@@ -247,10 +307,8 @@ def _autopilot(
     import os
 
     from .baselines import BASELINES, run_baselines
-    from .config import resolve_experiment
-    from .ensemble import build_ensemble
     from .leaderboard import best_run, leaderboard
-    from .pipeline import ensure_split, finalize, get_records, train
+    from .pipeline import ensure_split, get_records
     from .tracking import Run
 
     t0 = time.time()
@@ -346,21 +404,18 @@ def _autopilot(
                         f"{fmt_seconds(cap)} (bigger --budget to try it)"
                     )
                     continue
-        try:
-            exp = resolve_experiment(cfg, overrides={**ov, **overrides})
-            exp = exp.model_copy(
-                update={"train": exp.train.model_copy(update={"time_budget": f"{int(cap)}s"})}
-            )
-            run = train(
-                project, exp, name=f"auto-{name}", hypothesis=hyp, tags=["auto"], progress=None
-            )
-            m = cfg.metric
-            note(
-                f"{name}: val_{m}={run.summary['val'].get(m, float('nan')):.4f} "
-                f"in {fmt_seconds(run.summary.get('train_time_s') or 0)} ({run.summary.get('stop_reason')})"
-            )
-        except Exception as e:  # one failing recipe must not sink the search
-            note(f"{name} failed: {type(e).__name__}: {str(e)[:200]}")
+        args = ["train", "--name", f"auto-{name}", "-H", hyp, "--tag", "auto"]
+        args += _ov_args({**ov, **overrides, "train.time_budget": f"{int(cap)}s"})
+        res, err = _guarded(project, args, cap * 1.3 + 120)  # + model load / final eval
+        if res is None:  # one failing or stuck recipe must not sink the search
+            note(f"{name} failed: {err}")
+            continue
+        summ = res.get("summary") or {}
+        m = cfg.metric
+        note(
+            f"{name}: val_{m}={(summ.get('val') or {}).get(m, float('nan')):.4f} "
+            f"in {fmt_seconds(summ.get('train_time_s') or 0)} ({summ.get('stop_reason')})"
+        )
 
     # spend spare budget on a recipe search around the best neural run (tabular: cheap runs)
     bn = best_run(project, kind="neural")
@@ -368,14 +423,15 @@ def _autopilot(
         per = float(bn.get("train_time_s") or 0.0) + 5
         spare = left() * 0.55
         if spare > 6 * per and spare > 60:
-            from .tune import run_tune
-
-            res = run_tune(project, f"{int(spare)}s", from_run=bn["id"], n_trials=8, progress=None)
+            args = ["tune", "--budget", f"{int(spare)}s", "--from-run", bn["id"], "--trials", "8"]
+            res, err = _guarded(project, args, spare * 1.3 + 120)
             b2 = best_run(project, kind="neural")
             m = cfg.metric
             note(
-                f"tune: {len(res.get('trials', []))} trials in {fmt_seconds(spare)}; best neural now "
-                f"{b2['id'] if b2 else '?'} val_{m}={(b2 or {}).get(f'val_{m}')}"
+                f"tune failed: {err}"
+                if res is None
+                else f"tune: {len(res.get('trials', []))} trials in {fmt_seconds(spare)}; best neural "
+                f"now {b2['id'] if b2 else '?'} val_{m}={(b2 or {}).get(f'val_{m}')}"
             )
 
     # cross-validated bag of the best neural recipe: k models on train+val, out-of-fold val
@@ -391,18 +447,22 @@ def _autopilot(
     ):
         per = float(bn.get("train_time_s") or 0.0) + 5
         if left() > 5 * per * 1.3:
-            from .bagging import build_bag
-
-            try:
-                b = build_bag(project, bn["id"], k=5, progress=None)
+            cap = left() * 0.8
+            res, err = _guarded(
+                project,
+                ["bag", bn["id"], "--folds", "5", "--budget", f"{int(cap)}s"],
+                cap * 1.3 + 120,
+            )
+            if res is None:
+                note(f"bag failed: {err}")
+            else:
+                summ = res.get("summary") or {}
                 m = cfg.metric
                 note(
-                    f"5-fold bag of {bn['id']}: val_{m}={b.summary['val'][m]:.4f} (out-of-fold), "
-                    f"oof over {b.summary['n_oof']} rows {b.summary['oof'][m]:.4f}"
+                    f"5-fold bag of {bn['id']}: val_{m}={summ['val'][m]:.4f} (out-of-fold), "
+                    f"oof over {summ['n_oof']} rows {summ['oof'][m]:.4f}"
                 )
                 bagged = True
-            except Exception as e:
-                note(f"bag failed: {type(e).__name__}: {str(e)[:200]}")
 
     # seed replicas of the best neural recipe, then the ensemble over everything
     n_seeds = 1
@@ -412,18 +472,18 @@ def _autopilot(
         n_seeds = int(min(5, max(1, left() * 0.7 // max(per, 1.0))))
         if n_rows > 200_000:
             n_seeds = min(n_seeds, 2)
-    try:
-        replica_budget = left() * 0.7 / max(1, n_seeds - 1) if n_seeds > 1 else None
-        ens = build_ensemble(
-            project, top=6, seeds=n_seeds, progress=None, replica_budget_s=replica_budget
-        )
-        if n_seeds > 1:
-            note(f"trained {n_seeds - 1} seed replica(s) of {bn['id'] if bn else '?'}")
-        if ens is not None:
-            m = cfg.metric
-            note(f"ensemble {ens.meta.get('model')}: val_{m}={ens.summary['val'][m]:.4f}")
-    except ValueError as e:
-        note(f"no ensemble: {e}")
+    args = ["ensemble", "--top", "6", "--seeds", str(n_seeds)]
+    if n_seeds > 1:
+        args += ["--replica-budget", f"{int(left() * 0.7 / (n_seeds - 1))}s"]
+    res, err = _guarded(project, args, max(left(), 0) + 0.1 * budget_s + 120)
+    if n_seeds > 1:
+        note(f"trained up to {n_seeds - 1} seed replica(s) of {bn['id'] if bn else '?'}")
+    if res is None:
+        note(f"no ensemble: {err}")
+    elif res.get("run"):
+        summ = res.get("summary") or {}
+        m = cfg.metric
+        note(f"ensemble {summ.get('model')}: val_{m}={summ['val'][m]:.4f}")
 
     best = best_run(project)
     result: dict[str, Any] = {"best": best, "log": log}
@@ -453,11 +513,19 @@ def _autopilot(
                 note(
                     f"finalizing {pick['id']} (statistically tied with the leader, cheaper to refit)"
                 )
-            final = finalize(project, Run(project.runs_dir / pick["id"]), False, progress=None)
-            result["final"] = final.id
-            note(
-                f"finalized {pick['id']} on train+val -> {final.id} (served by `trainwright predict`)"
+            est = _finalize_cost(pick, project)
+            res, err = _guarded(
+                project,
+                ["finalize", pick["id"], "--no-include-test"],
+                est * 1.5 + 0.1 * budget_s + 120,
             )
+            if res is None:
+                note(f"finalize failed ({err}); `trainwright predict` will use {pick['id']} as is")
+            else:
+                result["final"] = res.get("run")
+                note(
+                    f"finalized {pick['id']} on train+val -> {res.get('run')} (served by `trainwright predict`)"
+                )
     result["seconds"] = round(time.time() - t0, 1)
     write_json(project.state_dir / "autopilot.json", result)
     return result
