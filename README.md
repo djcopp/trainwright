@@ -18,6 +18,9 @@ call. trainwright trains a small model for the job, checks it properly and packa
 
 ## Results
 
+**trainwright beats a vanilla prompt in 14 of 22 head-to-head runs: +2.6% on average, up to
++25%, and up to 60% fewer errors.**
+
 Same request, same agent (Claude Code on Sonnet), with and without trainwright. Scored on a
 hidden 15% holdout neither agent sees.
 
@@ -36,17 +39,24 @@ hidden 15% holdout neither agent sees.
 | superconductor temperature | [superconduct](https://www.openml.org/d/44148), 21k | RMSE ↓ | **9.88** | 10.04 |
 | support intent, 77 classes | [banking77](https://huggingface.co/datasets/PolyAI/banking77), 13k | accuracy | **0.934** | 0.893 |
 
-**Ahead on 7 of 12 tasks; +2.1% on the primary metric on average, up to +10.5%.** trainwright
-0.5.2, one run per task; prompt-only is the mean of 1–2 runs. Three of the four losses trace
-to failures fixed in 0.5.4 (a hung step, a tie broken by run order, unused budget); tweet_irony is
-within noise. Details: [docs/agent-trials.md](docs/agent-trials.md).
+- **Head-to-head:** each prompt-only run against the trainwright run on the same task, 22 pairs
+  over 12 tasks: 14 wins, 1 tie, 7 losses. Best: eye movements, 0.696 → 0.870 (+25%).
+- **Fewer errors:** EuroSAT misclassifies 1.4% of tiles instead of 3.5% (−60%); eye movements −34%,
+  MiniBooNE −13%, bike-demand RMSE −10.5%.
+- **Wins are bigger than losses:** +4.9% on average when ahead, −1.9% when behind.
+- **More consistent:** the same prompt-only request scored 0.908 and 0.696 on eye movements;
+  trainwright scored 0.859 and 0.848 (round 5).
+
+Per task against the prompt-only mean (the table): 7 of 12, +2.1%. trainwright 0.5.2, one run per
+task. Three of the four losses trace to failures fixed in 0.5.4 (a hung step, a tie broken by run
+order, unused budget); tweet_irony is within noise. Details: [docs/agent-trials.md](docs/agent-trials.md).
 
 Without an agent, the automated pipeline against early-stopped gradient boosting on
 OpenML-CC18 + CTR23 (sealed test sets, v0.4.2):
 
-| datasets | better | median gain | median classification-error cut |
-|---|---|---|---|
-| 98 | 63 | +0.6% | 4.8% |
+| datasets | matches or beats | strictly better | mean gain | median classification-error cut |
+|---|---|---|---|---|
+| 98 | **88** | 63 | +4.9% | 4.8% |
 
 ## What it looks like
 
