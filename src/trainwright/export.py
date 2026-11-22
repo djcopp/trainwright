@@ -165,6 +165,7 @@ def export_run(
         "task": cfg.task,
         "classes": split.get("classes"),
         "date_columns": dict(cfg.data.date_columns),
+        "text_features": _text_feature_states(project),
         "primary_metric": cfg.metric,
         "val_metrics": held_out.summary.get("val"),
         "metrics_from_run": held_out.id,
@@ -274,6 +275,17 @@ def _example_instances(project: Project, split: dict[str, Any], n: int = 2) -> l
     if project.config.modality == "text":
         return list(recs.texts or [])
     return [str(p) for p in (recs.paths or [])]
+
+
+def _text_feature_states(project: Project) -> dict[str, Any]:
+    if not project.config.data.text_features:
+        return {}
+    from ._utils import sha256_file
+    from .data.records import text_feature_states
+
+    p = Path(project.config.data.path)
+    path = p if p.is_absolute() else (project.root / p).resolve()
+    return text_feature_states(project.state_dir, project.config, None, sha256_file(path))
 
 
 def model_card(project: Project, run: Run, bundle: dict[str, Any]) -> str:

@@ -401,3 +401,59 @@ def test_date_strings_are_expanded_into_features(tmp_path):
     rid = tw("train", *FAST, "-o", "train.max_epochs=3", "-H", "dates")["result"]["run"]
     pred = tw("predict", rid, "-i", "d.csv", "--limit", "2")["result"]
     assert len(pred) == 2
+
+
+def test_text_columns_in_tables_become_features(tmp_path):
+    import pandas as pd
+    from conftest import TW
+
+    rng = np.random.default_rng(4)
+    n = 1200
+    words = {
+        "red": ["cherry", "plum", "tannic", "oak"],
+        "white": ["citrus", "crisp", "apple", "mineral"],
+    }
+    filler = [
+        "a",
+        "lovely",
+        "wine",
+        "with",
+        "notes",
+        "of",
+        "and",
+        "finish",
+        "long",
+        "bright",
+        "the",
+    ]
+    label = rng.choice(["red", "white"], n)
+    desc = [
+        " ".join(
+            rng.choice(filler, 8).tolist()
+            + rng.choice(words[lab], 2).tolist()
+            + rng.choice(filler, 6).tolist()
+        )
+        for lab in label
+    ]
+    df = pd.DataFrame(
+        {
+            "description": desc,
+            "price": rng.normal(20, 5, n).round(2),
+            "points": rng.integers(80, 100, n),
+            "country": rng.choice(["fr", "it", "us"], n),
+            "colour": label,
+        }
+    )
+    df.to_csv(tmp_path / "w.csv", index=False)
+    tw = TW(tmp_path)
+    tw("init", "--data", "w.csv", "--target", "colour")
+    prof = tw("profile")["result"]
+    assert prof["text_features"] == ["description"]
+    tw("split")
+    rows = tw("baseline", "--only", "dummy,hist_gbm")["result"]["leaderboard"]
+    gbm = next(r for r in rows if r["model"] == "baseline:hist_gbm")
+    assert gbm["val_roc_auc"] > 0.95  # the label lives only in the text
+    rid = tw("train", *FAST, "-o", "train.max_epochs=3", "-H", "text")["result"]["run"]
+    tw("export", rid)
+    pred = tw("predict", rid, "-i", "w.csv", "--limit", "3")["result"]
+    assert len(pred) == 3

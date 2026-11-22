@@ -129,6 +129,23 @@ def profile_project(project: Project, keep_ids: bool = False) -> dict[str, Any]:
                 )
                 if fmt:
                     found[c] = fmt
+        texts = [
+            c
+            for c, p in prof["tabular"]["columns"].items()
+            if p.get("kind") == "text"
+            and c not in cfg.data.text_features
+            and c not in cfg.data.drop
+            and c != cfg.data.target
+        ]
+        if texts:
+            cfg.data.text_features = [*cfg.data.text_features, *texts]
+            project.save()
+            prof["text_features"] = texts
+            prof["recommendations"].insert(
+                0,
+                f"Free-text columns {texts} are turned into 32 TF-IDF+SVD features each "
+                "(data.text_features); the raw text itself is not a model input.",
+            )
         if found:
             cfg.data.date_columns = {**cfg.data.date_columns, **found}
             project.save()

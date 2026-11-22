@@ -73,6 +73,13 @@ class Predictor:
     # ------------------------------------------------------------------ inputs
     def _apply_hook(self, instances: list[Any]) -> list[dict[str, Any]]:
         rows = [row if isinstance(row, dict) else {} for row in instances]
+        texts = self.meta.get("text_features") or {}
+        if texts and rows:
+            from .preprocessing import expand_text_features
+
+            cols = {c: [r.get(c) for r in rows] for c in texts}
+            ext = {k: v for k, v in expand_text_features(cols, texts).items() if k not in cols}
+            rows = [{**r, **{k: float(v[i]) for k, v in ext.items()}} for i, r in enumerate(rows)]
         dates = self.meta.get("date_columns") or {}
         if dates and rows:
             from .preprocessing import expand_dates

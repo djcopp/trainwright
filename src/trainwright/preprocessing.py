@@ -649,3 +649,85 @@ def expand_dates(columns: dict[str, Any], spec: dict[str, str]) -> dict[str, Any
                     vals.append(float(getattr(d, part)))
             out[f"{col}__{part}"] = np.asarray(vals, dtype=np.float64)
     return out
+
+
+# --------------------------------------------------------------------------- text columns in tables
+
+_TOKEN_RE = None
+
+
+def _word_ngrams(text: str, n: int = 2) -> list[str]:
+    import re
+
+    global _TOKEN_RE
+    if _TOKEN_RE is None:
+        _TOKEN_RE = re.compile(r"(?u)\b\w\w+\b")  # scikit-learn's default token pattern
+    toks = _TOKEN_RE.findall(text.lower())
+    out = list(toks)
+    for k in range(2, n + 1):
+        out += [" ".join(toks[i : i + k]) for i in range(len(toks) - k + 1)]
+    return out
+
+
+def fit_text_svd(texts: list[str], dims: int = 32, max_features: int = 5000) -> dict[str, Any]:
+    """TF-IDF (word 1-2 grams, sublinear tf) -> truncated SVD, fitted without labels.
+
+    The transform is stored as plain arrays so the numpy-only runtime can reproduce it.
+    """
+    from sklearn.decomposition import TruncatedSVD
+    from sklearn.feature_extraction.text import TfidfVectorizer
+
+    vec = TfidfVectorizer(
+        ngram_range=(1, 2), sublinear_tf=True, min_df=2, max_features=max_features, dtype=np.float64
+    )
+    X = vec.fit_transform([t or "" for t in texts])
+    k = int(max(1, min(dims, X.shape[1] - 1, X.shape[0] - 1)))
+    svd = TruncatedSVD(k, random_state=0).fit(X)
+    vocab = vec.vocabulary_
+    terms = [""] * len(vocab)
+    for t, i in vocab.items():
+        terms[i] = t
+    return {
+        "terms": terms,
+        "idf": np.round(vec.idf_, 6).tolist(),
+        "components": np.round(svd.components_, 6).tolist(),
+    }
+
+
+def text_svd_transform(texts: list[Any], state: dict[str, Any]) -> np.ndarray:
+    """[N, dims] SVD features for raw texts, identical to the fitted scikit-learn pipeline."""
+    index = state.get("_index")
+    if index is None:
+        index = {t: i for i, t in enumerate(state["terms"])}
+        state["_index"] = index
+    idf = np.asarray(state["idf"], dtype=np.float64)
+    comps = np.asarray(state["components"], dtype=np.float64)
+    out = np.zeros((len(texts), comps.shape[0]), dtype=np.float64)
+    for r, t in enumerate(texts):
+        if t is None or (isinstance(t, float) and math.isnan(t)):
+            continue
+        counts: dict[int, int] = {}
+        for g in _word_ngrams(str(t)):
+            j = index.get(g)
+            if j is not None:
+                counts[j] = counts.get(j, 0) + 1
+        if not counts:
+            continue
+        cols = np.fromiter(counts.keys(), dtype=np.int64)
+        tf = 1.0 + np.log(np.fromiter(counts.values(), dtype=np.float64))
+        w = tf * idf[cols]
+        w /= np.linalg.norm(w) or 1.0
+        out[r] = comps[:, cols] @ w
+    return out
+
+
+def expand_text_features(columns: dict[str, Any], states: dict[str, Any]) -> dict[str, Any]:
+    """Add ``<col>__t<i>`` SVD feature columns for each fitted text column (raw kept)."""
+    out = dict(columns)
+    for col, st in states.items():
+        if col not in columns:
+            continue
+        feats = text_svd_transform(list(columns[col]), st)
+        for i in range(feats.shape[1]):
+            out[f"{col}__t{i}"] = feats[:, i]
+    return out

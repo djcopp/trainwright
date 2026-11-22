@@ -116,7 +116,11 @@ def load_records(project_root: Path, cfg: ProjectConfig) -> Records:
     path = p if p.is_absolute() else (project_root / p).resolve()
     if not path.exists():
         raise FileNotFoundError(f"Data path {path} does not exist (data.path in trainwright.yaml)")
-    recs = _load_images(path, cfg) if cfg.modality == "image" else _load_table_like(path, cfg)
+    recs = (
+        _load_images(path, cfg)
+        if cfg.modality == "image"
+        else _load_table_like(path, cfg, project_root / ".trainwright")
+    )
     if cfg.data.corrections:
         recs = _apply_corrections(recs, project_root, cfg.data.corrections)
     return recs
@@ -145,8 +149,41 @@ def _apply_corrections(recs: Records, root: Path, rel: str) -> Records:
     return recs
 
 
-def _load_table_like(path: Path, cfg: ProjectConfig) -> Records:
+def text_feature_states(
+    state_dir: Path, cfg: ProjectConfig, df: pd.DataFrame | None, data_sha: str
+) -> dict[str, Any]:
+    """Fitted TF-IDF+SVD states for data.text_features, cached per data fingerprint."""
+    import json
+
+    from ..preprocessing import fit_text_svd
+
+    cols = list(cfg.data.text_features)
+    if not cols:
+        return {}
+    cache = state_dir / "text_features.json"
+    if cache.exists():
+        blob = json.loads(cache.read_text())
+        if blob.get("data_sha") == data_sha and sorted(blob.get("states", {})) == sorted(cols):
+            return blob["states"]
+    if df is None:
+        raise FileNotFoundError("text feature state missing; reload the data to refit it")
+    states = {
+        c: fit_text_svd(df[c].fillna("").astype(str).tolist()) for c in cols if c in df.columns
+    }
+    state_dir.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps({"data_sha": data_sha, "states": states}))
+    return states
+
+
+def _load_table_like(path: Path, cfg: ProjectConfig, state_dir: Path | None = None) -> Records:
     df = read_table(path)
+    if cfg.data.text_features and cfg.modality == "tabular" and state_dir is not None:
+        from ..preprocessing import expand_text_features
+
+        states = text_feature_states(state_dir, cfg, df, sha256_file(path))
+        cols = {c: df[c].tolist() for c in states}
+        derived = {k: v for k, v in expand_text_features(cols, states).items() if k not in cols}
+        df = pd.concat([df, pd.DataFrame(derived, index=df.index)], axis=1)
     if cfg.data.date_columns and cfg.modality == "tabular":
         from ..preprocessing import expand_dates
 

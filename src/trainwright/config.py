@@ -49,6 +49,11 @@ class DataConfig(_Strict):
         None, description="Rows sharing a group never straddle splits."
     )
     time_column: str | None = Field(None, description="Split chronologically on this column.")
+    text_features: list[str] = Field(
+        default_factory=list,
+        description="Free-text columns in a table, turned into 32 TF-IDF+SVD numeric features each "
+        "(fitted without labels; reproduced by the runtime). Filled by `profile`.",
+    )
     date_columns: dict[str, str] = Field(
         default_factory=dict,
         description="Date/time text columns -> strptime format ('iso' for ISO 8601), expanded into "
