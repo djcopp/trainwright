@@ -30,6 +30,7 @@ def run_row(run: Run, metric: str, current_split: str | None) -> dict[str, Any]:
         "stop_reason": summ.get("stop_reason"),
         "same_split": (meta.get("split_hash") == current_split) if current_split else None,
         "superseded_by": meta.get("superseded_by"),
+        "val_log_loss": val.get("log_loss"),
     }
     if "loss" in val:
         row["val_loss"] = val["loss"]
@@ -66,13 +67,16 @@ def leaderboard(
     key = f"val_{cfg.metric}"
     sign = -1 if cfg.metric_mode == "max" else 1
 
-    def sort_key(r: dict[str, Any]) -> tuple[int, int, float]:
+    def sort_key(r: dict[str, Any]) -> tuple[int, int, float, float]:
         v = r.get(key)
         bad = v is None or (isinstance(v, float) and not math.isfinite(v))
+        ll = r.get("val_log_loss")
         return (
             0 if r.get("same_split") in (True, None) else 1,
             1 if bad else 0,
             sign * (float(v) if not bad else 0.0),  # type: ignore[arg-type]
+            # exact ties (e.g. a saturated val accuracy) go to the better-calibrated run
+            float(ll) if isinstance(ll, (int, float)) and math.isfinite(ll) else math.inf,
         )
 
     rows.sort(key=sort_key)
