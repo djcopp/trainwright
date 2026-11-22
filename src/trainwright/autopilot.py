@@ -62,7 +62,7 @@ LADDERS: dict[str, list[tuple[str, dict[str, Any], float, str]]] = {
         (
             "encoder",
             {"model.name": "text_pretrained"},
-            0.30,
+            0.45,
             "autopilot: fine-tune a small pretrained sentence encoder (bge-small, 33M)",
         ),
         (
@@ -320,6 +320,7 @@ def _autopilot(
 
     hyps = {r.get("hypothesis") for r in rows}
     n_rows = len(get_records(project).y)
+    hyps_by_name = {n: h for n, _, _, h in LADDERS[cfg.modality]}
     for name, ov, share, hyp in LADDERS[cfg.modality]:
         if hyp in hyps:
             continue
@@ -327,6 +328,24 @@ def _autopilot(
         if cap < min(30.0, 0.15 * budget_s):
             note(f"skipped {name}: not enough time left")
             continue
+        if name == "encoder-base":
+            # ~3.5x the small encoder's epoch time; it needs about 3 epochs to be worth it
+            small = next(
+                (
+                    r
+                    for r in leaderboard(project)
+                    if r.get("hypothesis") == hyps_by_name.get("encoder")
+                ),
+                None,
+            )
+            if small and small.get("epochs_run"):
+                epoch_s = float(small.get("train_time_s") or 0) / max(1, int(small["epochs_run"]))
+                if 3 * 3.5 * epoch_s > cap:
+                    note(
+                        f"skipped {name}: ~{fmt_seconds(3.5 * epoch_s)}/epoch here, 3 epochs won't fit in "
+                        f"{fmt_seconds(cap)} (bigger --budget to try it)"
+                    )
+                    continue
         try:
             exp = resolve_experiment(cfg, overrides={**ov, **overrides})
             exp = exp.model_copy(
