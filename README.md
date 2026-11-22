@@ -38,6 +38,12 @@ holdouts across four public datasets (tabular, image and text) with repeated run
 
 Per-task results and method are under [Benchmarks](#benchmarks).
 
+## How it works
+
+<p align="center">
+  <img src="docs/assets/workflow.svg" alt="trainwright workflow: profile, frozen split, baselines, recipe ladder, cross-validated bag, greedy ensemble, finalize, evaluate test once, export, benchmark, serve" width="900">
+</p>
+
 ## Highlights
 
 - **Opinionated lifecycle.** Profile, frozen split, baselines, hypothesis-driven experiments,
