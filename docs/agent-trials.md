@@ -294,6 +294,21 @@ trainwright is ahead on 6 of 8 (primary metric). Agent cost per task: $0.13–0.
 * **Cross-validated bagging** (`trainwright bag`, and inside `auto` for tables): k fold models on
   train+val, scored out of fold. The bag replaces the single run it copies.
 
+### Bagging, measured on sealed test sets (`bench/bagtest.py`)
+
+On 16 small suite datasets (up to 150k cells), a 5-fold bag of the default MLP compared with that
+same single run:
+
+| comparison | mean | median | record |
+|---|---|---|---|
+| bag vs single run | +4.9% | +2.9% | 13 wins, 1 tie, 2 losses |
+| bag vs HistGBM | +10.0% | — | wins 12 of 16 |
+| single run vs HistGBM | +5.2% | — | wins 8 of 16 |
+
+The bag's out-of-fold val score is a single-model estimate, so it under-states the k-model average.
+On blood-transfusion the bag's val was 0.715 against the single run's 0.749, but on test it scored 0.748
+against 0.716. A bag therefore supersedes the run it copies: `best` and ensembling skip that run.
+
 ## Next: scale
 
 Four datasets are too few for firm claims. `bench/suite.py` runs trainwright's automated pipeline,
