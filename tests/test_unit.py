@@ -373,7 +373,13 @@ def test_every_registered_model_builds_and_runs():
     }
     offline = {"image_pretrained": {"pretrained": False}, "image_segmenter": {"pretrained": False}}
     for info in tw.list_models():
-        if info["name"] in ("text_pretrained", "tiny_test_model", "image_probe", "seg_probe"):
+        if info["name"] in (
+            "text_pretrained",
+            "tiny_test_model",
+            "image_probe",
+            "seg_probe",
+            "text_probe",
+        ):
             continue  # needs a hub download / registered by another test
         spec, batch = specs[info["modality"]]
         seg = "segmentation" in info["tasks"]

@@ -183,7 +183,7 @@ class ProjectDataModule(DataModule):
         elif self.modality == "text":
             if state:
                 self.pre = text_preprocessor_from_state(state["features"])
-            elif self.exp.model.name == "text_pretrained":
+            elif self.exp.model.name in ("text_pretrained", "text_probe"):
                 params = self.exp.model.params
                 encoder = params.get("encoder", "BAAI/bge-small-en-v1.5")
                 max_len = int(params.get("max_length", 0) or 0)

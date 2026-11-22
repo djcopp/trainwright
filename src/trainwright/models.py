@@ -596,6 +596,70 @@ class TextPretrained(nn.Module):
 
 
 @register_model(
+    "text_probe",
+    modality="text",
+    description="Frozen pretrained sentence encoder (bge-small by default) + linear head. Each text "
+    "is encoded once and cached, so only the head trains.",
+    when_to_use="Large or long-text datasets where fine-tuning the encoder is too slow on this "
+    "machine; also a different model to blend with TF-IDF and a fine-tuned encoder.",
+    recipe={
+        "optim.lr": 3e-3,
+        "optim.weight_decay": 1e-4,
+        "train.max_epochs": 60,
+        "train.batch_size": 128,
+        "train.patience": 10,
+        "train.label_smoothing": 0.0,
+    },
+)
+class TextProbe(nn.Module):
+    def __init__(
+        self,
+        spec: dict[str, Any],
+        encoder: str = "BAAI/bge-small-en-v1.5",
+        dropout: float = 0.1,
+        max_length: int = 0,
+    ):
+        super().__init__()
+        from transformers import AutoModel
+
+        self.encoder = AutoModel.from_pretrained(encoder)
+        for p in self.encoder.parameters():
+            p.requires_grad_(False)
+        self.pad_id = int(spec.get("pad_id", 0))
+        d = int(self.encoder.config.hidden_size)
+        self.head = nn.Sequential(
+            nn.LayerNorm(d), nn.Dropout(dropout), nn.Linear(d, int(spec.get("n_outputs", 1)))
+        )
+        self.cache_features = True
+        self._cache: dict[bytes, torch.Tensor] = {}
+
+    def train(self, mode: bool = True) -> TextProbe:
+        super().train(mode)
+        self.encoder.eval()
+        return self
+
+    def _encode(self, tokens: torch.Tensor) -> torch.Tensor:
+        mask = (tokens != self.pad_id).long()
+        with torch.no_grad():
+            h = self.encoder(input_ids=tokens, attention_mask=mask).last_hidden_state
+        m = mask.unsqueeze(-1).to(h.dtype)
+        return (h * m).sum(1) / m.sum(1).clamp(min=1.0)
+
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        tracing = torch.jit.is_tracing() or torch.onnx.is_in_onnx_export()
+        if not self.cache_features or tracing:
+            return self.head(self._encode(tokens).float())
+        keys = [r.tobytes() for r in tokens.cpu().numpy()]  # token ids: exact keys
+        miss = [i for i, k in enumerate(keys) if k not in self._cache]
+        if miss:
+            f = self._encode(tokens[miss]).float().cpu()
+            for i, row in zip(miss, f):
+                self._cache[keys[i]] = row
+        feats = torch.stack([self._cache[k] for k in keys]).to(tokens.device)
+        return self.head(feats)
+
+
+@register_model(
     "image_probe",
     modality="image",
     description="Linear probe: frozen self-supervised backbone (DINOv2-small by default) + linear head. "
