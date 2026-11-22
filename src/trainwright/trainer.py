@@ -127,6 +127,34 @@ class Trainer:
         self._best_state: dict[str, torch.Tensor] | None = None
 
     # ------------------------------------------------------------------ utils
+    def _fit_schedule_to_budget(
+        self,
+        scheduler: Any,
+        steps_per_epoch: int,
+        elapsed: float,
+        epoch: int,
+        last_epoch_s: float,
+        planned: int,
+    ) -> None:
+        """Shrink a cosine schedule so it finishes inside the time budget.
+
+        A run cut off by its budget mid-schedule stops at a high LR (bad for fine-tuning); a
+        compressed schedule decays properly and ends at the budget with a converged model.
+        """
+        horizon = getattr(scheduler, "tw_horizon", None)
+        if not self.time_budget_s or horizon is None or epoch < 1:
+            return
+        # the latest epoch is the best speed estimate (epoch 1 includes loading/tokenising)
+        fits = epoch + int((self.time_budget_s - elapsed) // max(last_epoch_s, 1e-9))
+        new = max(epoch + 1, min(planned, fits))
+        if new != self.max_epochs:
+            horizon["total"] = max(1, new * steps_per_epoch)
+            if new < planned:
+                self.say(
+                    f"time budget fits ~{new} of {planned} epochs: LR schedule compressed to end there"
+                )
+            self.max_epochs = new
+
     def say(self, msg: str) -> None:
         if self.progress:
             self.progress(msg)
@@ -201,7 +229,10 @@ class Trainer:
         for cb in self.callbacks:
             cb.on_fit_start(self, task)
 
-        for epoch in range(1, self.max_epochs + 1):
+        planned = self.max_epochs
+        epoch = 0
+        while epoch < self.max_epochs:  # max_epochs may shrink to fit a time budget
+            epoch += 1
             self.epoch = epoch
             for cb in self.callbacks:
                 cb.on_epoch_start(self, task, epoch)
@@ -276,6 +307,9 @@ class Trainer:
                 cb.on_epoch_end(self, task, row)
             if self._stop_reason:
                 break
+            self._fit_schedule_to_budget(
+                scheduler, steps_per_epoch, time.time() - t0, epoch, row["epoch_time_s"], planned
+            )
 
         for cb in self.callbacks:
             cb.on_fit_end(self, task)

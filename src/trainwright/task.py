@@ -100,14 +100,17 @@ class Task(nn.Module):
         total = max(1, steps_per_epoch * max_epochs)
         warm = int(cfg.warmup_epochs * steps_per_epoch)
         if cfg.scheduler == "cosine":
+            horizon = {"total": total}  # mutable: the trainer shrinks it to fit a time budget
 
             def f(step: int) -> float:
                 if step < warm:
                     return 0.01 + 0.99 * step / max(1, warm)
-                prog = (step - warm) / max(1, total - warm)
+                prog = (step - warm) / max(1, horizon["total"] - warm)
                 return 0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi * min(1.0, prog)))
 
-            return opt, torch.optim.lr_scheduler.LambdaLR(opt, f), "step"
+            cos = torch.optim.lr_scheduler.LambdaLR(opt, f)
+            cos.tw_horizon = horizon  # type: ignore[attr-defined]
+            return opt, cos, "step"
         if cfg.scheduler == "onecycle":
             max_lrs = [g["lr"] for g in opt.param_groups]
             sched = torch.optim.lr_scheduler.OneCycleLR(
