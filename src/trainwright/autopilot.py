@@ -535,7 +535,7 @@ def _autopilot(
     m = cfg.metric
     sign = 1.0 if cfg.metric_mode == "max" else -1.0
     first: float | None = None
-    for nb in range(3):
+    for nb in range(2 if converge else 3):  # untimed: a third bag rarely pays for itself
         bn = best_run(project, kind="neural")
         if not (
             bag
@@ -631,14 +631,14 @@ def _autopilot(
             before = float(lead[f"val_{m}"])
             se = float(lead.get("val_se") or 0.0)
             per = float(bn.get("train_time_s") or 0.0) + 5
-            tb = min(max(120.0, per * 8 * 3), left() * 0.5)
-            if tb < 6 * per:
+            tb = min(max(120.0, per * 4 * 2), left() * 0.5)  # a small search around the leader
+            if tb < 4 * per:
                 stopped = "safety cap"
                 note("stopped: the safety cap is close")
                 break
             res, err = _guarded(
                 project,
-                ["tune", "--budget", f"{int(tb)}s", "--from-run", bn["id"], "--trials", "8"],
+                ["tune", "--budget", f"{int(tb)}s", "--from-run", bn["id"], "--trials", "4"],
                 tb * 1.3 + 120,
             )
             if res is None:
