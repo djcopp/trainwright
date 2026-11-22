@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 AUTONOMY = (
     " Work fully autonomously: there is nobody to answer questions, so make reasonable decisions "
-    "yourself. You have a time limit of about 40 minutes, so keep individual commands under ~8 minutes."
+    "yourself. You have a time limit of about {minutes} minutes, so keep individual commands under ~8 minutes."
 )
 
 TASKS = {
@@ -311,7 +311,7 @@ def run_trial(
     which = subprocess.run(
         ["which", "trainwright", "python"], env=env, capture_output=True, text=True
     ).stdout
-    prompt = spec["prompt"] + AUTONOMY
+    prompt = spec["prompt"] + AUTONOMY.format(minutes=int(max(10, timeout_min - 5)))
     cmd = [
         "claude",
         "-p",
