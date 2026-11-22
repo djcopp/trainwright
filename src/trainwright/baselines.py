@@ -31,6 +31,7 @@ DESCRIPTIONS = {
     "dummy": "predicts class priors / the training mean: the absolute floor",
     "linear": "logistic/ridge regression on standardised numerics + one-hot categoricals",
     "hist_gbm": "scikit-learn HistGradientBoosting (<=1000 rounds, early stopping, native categoricals): strong for tables",
+    "gbm_tuned": "HistGradientBoosting tuned on val over 12 configurations, best one averaged over 3 seeds",
     "tfidf_linear": "TF-IDF word 1-2 grams + logistic/ridge regression (strong for text)",
     "pixels_linear": "logistic/ridge regression on 16x16 downsampled pixels",
 }
@@ -119,6 +120,67 @@ def _make_tabular(name: str, task: str, pre: TabularPreprocessor, seed: int) -> 
     raise KeyError(name)
 
 
+GBM_SPACE: dict[str, list[Any]] = {
+    "learning_rate": [0.03, 0.05, 0.1],
+    "max_leaf_nodes": [15, 31, 63, 127],
+    "min_samples_leaf": [5, 20, 50],
+    "l2_regularization": [0.0, 1.0, 10.0],
+    "max_features": [0.5, 0.8, 1.0],
+}
+
+
+def _tune_gbm(
+    task: str,
+    pre: TabularPreprocessor,
+    seed: int,
+    Xtr: Any,
+    ytr: Any,
+    Xva: Any,
+    yva: Any,
+    metric: str,
+    k: int,
+    progress: Callable[[str], None] | None,
+    n_configs: int = 12,
+) -> Any:
+    """Random search over HistGBM settings on val, then the best config averaged over 3 seeds."""
+    from sklearn.base import clone
+    from sklearn.ensemble import VotingClassifier, VotingRegressor
+    from sklearn.pipeline import make_pipeline
+
+    from .metrics import _single_metric, metric_mode
+
+    rng = np.random.default_rng(seed)
+    sign = 1.0 if metric_mode(metric) == "max" else -1.0
+    base = _make_tabular("hist_gbm", task, pre, seed)
+    configs: list[dict[str, Any]] = [{}] + [
+        {k_: v[int(rng.integers(len(v)))] for k_, v in GBM_SPACE.items()}
+        for _ in range(n_configs - 1)
+    ]
+    best, best_score = configs[0], -np.inf
+    for c in configs:
+        m = clone(base).set_params(
+            **{
+                f"histgradientboosting{'classifier' if task == 'classification' else 'regressor'}__{a}": b
+                for a, b in c.items()
+            }
+        )
+        m.fit(Xtr, ytr)
+        out = _proba_full(m, Xva, k) if task == "classification" else m.predict(Xva)
+        sc = sign * _single_metric(task, metric, np.asarray(yva), out, k)
+        if sc > best_score:
+            best, best_score = c, sc
+    if progress:
+        progress(f"gbm_tuned: best of {len(configs)} configs {best or 'defaults'}")
+    ct, est = base.steps[0][1], base.steps[-1][1]
+    members = [(f"s{i}", clone(est).set_params(random_state=seed + i, **best)) for i in range(3)]
+    vote = (
+        VotingClassifier(members, voting="soft")
+        if task == "classification"
+        else VotingRegressor(members)
+    )
+    return make_pipeline(clone(ct), vote)
+
+
 def _to_str_cats(df: Any, cat: list[str]) -> Any:
     df = df.copy()
     for c in cat:
@@ -165,7 +227,8 @@ def run_baselines(
     records = get_records(project)
     split = require_split(project, records)
     names = which or BASELINES[cfg.modality]
-    unknown = [n for n in names if n not in BASELINES[cfg.modality]]
+    extra = ["gbm_tuned"] if cfg.modality == "tabular" else []
+    unknown = [n for n in names if n not in BASELINES[cfg.modality] + extra]
     if unknown:
         raise ValueError(
             f"Unknown baseline(s) {unknown} for {cfg.modality}. Options: {BASELINES[cfg.modality]}"
@@ -212,6 +275,19 @@ def run_baselines(
         if name == "dummy":
             model: Any = (
                 DummyClassifier(strategy="prior") if task == "classification" else DummyRegressor()
+            )
+        elif name == "gbm_tuned":
+            model = _tune_gbm(
+                task,
+                pre,
+                cfg.split.seed,
+                feats["train"],
+                y_tr,
+                feats["val"],
+                y_va,
+                cfg.metric,
+                len(classes or []),
+                progress,
             )
         elif cfg.modality == "tabular":
             model = _make_tabular(name, task, pre, cfg.split.seed)

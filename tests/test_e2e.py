@@ -611,3 +611,14 @@ def test_segmentation_lifecycle(tmp_path):
     assert mask.shape == (40, 48) and set(np.unique(mask)) <= {0, 1}
     exp = tw("export", rid)["result"]
     assert exp["parity_ok"]
+
+
+def test_tuned_gbm_baseline_finalizes(regression_project):
+    tw = regression_project
+    tw("init", "--data", "houses.csv", "--target", "price")
+    tw("split")
+    res = tw("baseline", "--only", "hist_gbm,gbm_tuned")["result"]["leaderboard"]
+    tuned = next(r for r in res if r["model"] == "baseline:gbm_tuned")
+    assert tuned["val_rmse"] > 0
+    fin = tw("finalize", tuned["id"])["result"]
+    assert fin["run"]
