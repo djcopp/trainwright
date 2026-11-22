@@ -162,7 +162,8 @@ early-stopped gradient boosting on val ~3 times in 4.
 2. Smooth targets or tiny noisy data: compare `model.params.num_embedding=none`. More capacity: `hidden=512`.
 3. Overfitting → `optim.weight_decay` up (1e-4 → 1e-3 → 1e-2), `model.params.dropout` 0.2-0.4.
 4. Imbalance → `train.class_weights=balanced`. Skewed regression target → `preprocess.target_transform=log1p`.
-5. If HistGradientBoosting still wins or ties after features + tuning, ship it: `trainwright finalize <baseline-run>` then `export`.
+5. `auto` also trains `gbm_tuned` (gradient boosting tuned on val) and blends it with the neural runs.
+   If it still wins on its own, ship it: `trainwright finalize <baseline-run>` then `export`.
 
 **Image** (`image_pretrained`, resnet18 at 224px): fine-tunes an ImageNet backbone with a 10x lower backbone LR.
 1. Look at `.trainwright/samples.png` first. If left/right matters: `preprocess.hflip=false`.
@@ -176,7 +177,8 @@ early-stopped gradient boosting on val ~3 times in 4.
 7. Open `runs/<id>/eval/val_errors.png` to see mistakes; mislabelled data is common (`trainwright review`).
 
 **Text** (`text_pretrained`: fine-tuned bge-small, when `trainwright[text]` is installed; else `text_bag`).
-1. Compare against `tfidf_linear`: it's strong on small data.
+1. `auto` also trains `tfidf_tuned` (words + characters, tuned on val) and blends it in: it is strong on
+   short texts and small data.
 2. Faster/smaller → `model.params.encoder=sentence-transformers/all-MiniLM-L6-v2` (22M); more accuracy → `BAAI/bge-base-en-v1.5`.
    Text models train slowly on CPU/MPS: set `train.time_budget`, then `finalize` (it retrains, so budget for it).
 3. Need microsecond inference or no transformers → `model.name=text_bag` / `text_cnn`.
