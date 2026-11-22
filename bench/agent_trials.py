@@ -341,16 +341,37 @@ def run_trial(
         "Glob",
         "Grep",
     ]
-    t0 = time.time()
-    log = (tdir.parent / f"{tdir.name}.transcript.jsonl").open("w")
-    try:
-        p = subprocess.run(
-            cmd, cwd=tdir, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=timeout_min * 60
-        )
-        status = "ok" if p.returncode == 0 else f"exit {p.returncode}"
-    except subprocess.TimeoutExpired:
-        status = "timeout"
-    log.close()
+    tx = tdir.parent / f"{tdir.name}.transcript.jsonl"
+    for attempt in range(25):  # a usage-limit stop is retried (fresh folder) for up to ~6 h
+        if attempt:
+            shutil.rmtree(tdir)
+            shutil.copytree(tasks / task / "data", tdir, copy_function=os.link)
+            if condition == "trainwright":
+                subprocess.run(
+                    [str(bin_dir / "trainwright"), "agent-setup", "--project"],
+                    cwd=tdir,
+                    env=env,
+                    capture_output=True,
+                )
+        t0 = time.time()
+        log = tx.open("w")
+        try:
+            p = subprocess.run(
+                cmd,
+                cwd=tdir,
+                env=env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                timeout=timeout_min * 60,
+            )
+            status = "ok" if p.returncode == 0 else f"exit {p.returncode}"
+        except subprocess.TimeoutExpired:
+            status = "timeout"
+        log.close()
+        if "hit your" not in tx.read_text() or attempt == 24:
+            break
+        print(f"{tdir.name}: usage limit hit; retrying in 15 min", flush=True)
+        time.sleep(900)
     meta = {
         "task": task,
         "condition": condition,
@@ -421,6 +442,41 @@ def _transcript_stats(path: Path) -> dict:
     return stats
 
 
+def _score_masks(task_dir: Path, tdir: Path, spec: dict) -> tuple[dict, float]:
+    """mIoU over the hidden masks; a missing prediction counts as all background."""
+    from PIL import Image
+
+    k = int(spec["n_classes"])
+    cm = np.zeros((k, k), dtype=np.int64)
+    found = 0
+    truths = sorted((task_dir / "hidden_masks").glob("*.png"))
+    for f in truths:
+        y = np.asarray(Image.open(f)).astype(np.int64)
+        pf = tdir / "predictions" / f.name
+        if pf.exists():
+            pm = Image.open(pf)
+            if pm.size != (y.shape[1], y.shape[0]):
+                pm = pm.resize((y.shape[1], y.shape[0]), Image.Resampling.NEAREST)
+            p = np.asarray(pm).astype(np.int64)
+            if p.ndim == 3:
+                p = p[..., 0]
+            found += 1
+        else:
+            p = np.zeros_like(y)
+        valid = y != 255
+        cm += np.bincount(
+            np.clip(y[valid], 0, k - 1) * k + np.clip(p[valid], 0, k - 1), minlength=k * k
+        ).reshape(k, k)
+    tp = np.diag(cm).astype(float)
+    union = cm.sum(0) + cm.sum(1) - tp
+    seen = union > 0
+    score = {
+        "miou": round(float((tp[seen] / union[seen]).mean()), 4),
+        "pixel_accuracy": round(float(tp.sum() / max(cm.sum(), 1)), 4),
+    }
+    return score, round(found / max(len(truths), 1), 4)
+
+
 def score_trial(tasks: Path, tdir: Path) -> dict:
     meta_path = tdir.parent / f"{tdir.name}.meta.json"
     meta = (
@@ -431,6 +487,12 @@ def score_trial(tasks: Path, tdir: Path) -> dict:
     spec = json.loads((tasks / meta["task"] / "task.json").read_text())
     truth = pd.read_csv(tasks / meta["task"] / "hidden_labels.csv")
     res = {**meta, **_transcript_stats(tdir.parent / f"{tdir.name}.transcript.jsonl")}
+    if spec["kind"] == "segmentation":
+        try:
+            res["score"], res["coverage"] = _score_masks(tasks / meta["task"], tdir, spec)
+        except Exception as e:
+            res["score"], res["score_error"] = None, f"{type(e).__name__}: {e}"
+        return res
     pred_path = tdir / "predictions.csv"
     if not pred_path.exists():
         res["score"] = None

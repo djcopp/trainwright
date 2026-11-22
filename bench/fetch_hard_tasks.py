@@ -183,7 +183,61 @@ def ledgar() -> None:
     _write(d, spec, df.loc[hide, "label"].reset_index(drop=True))
 
 
+def foodseg() -> None:
+    """FoodSeg103 (Apache-2.0) validation split: 2135 photos, 104 classes incl. background."""
+    from PIL import Image
+
+    raw = _cached(
+        "foodseg_val.parquet",
+        "https://huggingface.co/api/datasets/EduardoPacheco/FoodSeg103/parquet/default/validation/0.parquet",
+    )
+    df = pd.read_parquet(io.BytesIO(raw)).sample(frac=1.0, random_state=SEED).reset_index(drop=True)
+    card = _get(
+        "https://huggingface.co/datasets/EduardoPacheco/FoodSeg103/raw/main/README.md"
+    ).decode()
+    names = {}
+    for line in card.splitlines():
+        parts = [x.strip() for x in line.strip().strip("|").split("|")]
+        if len(parts) == 2 and parts[0].isdigit():
+            names[int(parts[0])] = parts[1]
+    n_hidden = int(round(0.15 * len(df)))
+    d = _task_dir("foodseg")
+    data = d / "data"
+    for sub in ("images", "masks", "holdout"):
+        (data / sub).mkdir()
+    (d / "hidden_masks").mkdir()
+    hidden = []
+    for i, row in df.iterrows():
+        stem = f"food_{int(row['id']):05d}"
+        img = Image.open(io.BytesIO(row["image"]["bytes"])).convert("RGB")
+        mask = Image.open(io.BytesIO(row["label"]["bytes"]))
+        if i < n_hidden:
+            img.save(data / "holdout" / f"{stem}.jpg", quality=95)
+            mask.save(d / "hidden_masks" / f"{stem}.png")
+            hidden.append(f"{stem}.jpg")
+        else:
+            img.save(data / "images" / f"{stem}.jpg", quality=95)
+            mask.save(data / "masks" / f"{stem}.png")
+    pd.DataFrame({"class_id": sorted(names), "name": [names[k] for k in sorted(names)]}).to_csv(
+        data / "classes.csv", index=False
+    )
+    spec = {
+        "kind": "segmentation",
+        "file": "images",
+        "target": None,
+        "task": "segmentation",
+        "n_classes": len(names),
+        "prompt": "We want to estimate what's on a plate from a photo, ingredient by ingredient. "
+        "images/ has food photos and masks/ has a mask for each (same file name, .png) where each "
+        "pixel's value is the ingredient class id from classes.csv (0 = background). Train a "
+        "segmentation model and tell me how good it is. Finally, for every photo in holdout/, "
+        "write a mask PNG with the same file name (but .png) into a folder predictions/: same "
+        "width and height as the photo, pixel values = class ids.",
+    }
+    _write(d, spec, pd.Series(hidden))
+
+
 if __name__ == "__main__":
-    for fn in (retail_repeat, airbnb_price, ledgar):
+    for fn in (retail_repeat, airbnb_price, ledgar, foodseg):
         if len(sys.argv) < 2 or fn.__name__ in sys.argv[1:]:
             fn()
