@@ -75,7 +75,7 @@ class NumericTransformer:
         X = np.asarray(X, dtype=np.float64)
         if X.ndim == 1:
             X = X[None, :]
-        out = np.empty((X.shape[0], len(self.columns)), dtype=np.float64)
+        out: np.ndarray = np.empty((X.shape[0], len(self.columns)), dtype=np.float64)
         indicators = []
         ref = np.asarray(self.references)
         for j in range(len(self.columns)):

@@ -43,7 +43,10 @@ def member_outputs(project: Project, run: Run, split: str) -> tuple[np.ndarray, 
 def _average(outs: list[np.ndarray], weights: list[float]) -> np.ndarray:
     w = np.asarray(weights, dtype=np.float64)
     w = w / w.sum()
-    return sum(wi * o for wi, o in zip(w, outs))  # type: ignore[return-value]
+    total: np.ndarray = np.zeros_like(outs[0], dtype=np.float64)
+    for wi, o in zip(w, outs):
+        total = total + wi * o
+    return total
 
 
 def ensemble_outputs(project: Project, run: Run, split: str) -> tuple[np.ndarray, np.ndarray]:
