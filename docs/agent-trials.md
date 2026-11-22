@@ -52,7 +52,10 @@ Holdout scores. **Bold** = better side. "→" = before → after the fix.
 | superconduct | RMSE ↓ | **9.60, 10.16** | 10.04 |
 | banking77 | accuracy | **0.931, 0.937** | 0.893 |
 
-Mean change vs prompt only: **+2.1%** (median +0.8%, best +10.5%, worst −4.3%).
+Per task, vs the prompt-only mean: 7 of 12, **+2.1%** (median +0.8%, best +10.5%, worst −4.3%).
+Per head-to-head run (22 pairs): 14 wins, 1 tie, 7 losses, **+2.6%** (median +0.8%, best +25.0%,
+worst −4.7%). Wins average +4.9%, losses −1.9%. Error cut on the wins: EuroSAT 60%, eye movements
+34%, MiniBooNE 13%, bike sharing 10.5%, app reviews 10%.
 
 The four losses:
 
