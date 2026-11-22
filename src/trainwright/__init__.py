@@ -11,7 +11,7 @@ Python API (Lightning-style)::
 Project lifecycle (what agents should use): see ``trainwright guide`` / the CLI.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 from ._utils import seed_everything
 from .config import ExperimentConfig, ProjectConfig, default_experiment, resolve_experiment
