@@ -42,13 +42,19 @@ LADDERS: dict[str, list[tuple[str, dict[str, Any], float, str]]] = {
         (
             "probe",
             {"model.name": "image_probe"},
-            0.30,
-            "autopilot: frozen DINOv2 linear probe (strong, fast on small image sets)",
+            0.15,
+            "autopilot: frozen DINOv2-small linear probe (features cached: fast on small image sets)",
+        ),
+        (
+            "probe-base",
+            {"model.name": "image_probe", "model.params.backbone": "dinov2_base"},
+            0.20,
+            "autopilot: frozen DINOv2-base linear probe (richer features, still one backbone pass)",
         ),
         (
             "finetune",
             {"model.name": "image_pretrained"},
-            0.55,
+            0.45,
             "autopilot: fine-tune a pretrained CNN (wins when images differ from natural photos)",
         ),
     ],
