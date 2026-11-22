@@ -161,6 +161,18 @@ TASKS = {
         "good it is. Finally write predictions for holdout.csv (same columns, no `signal`) to "
         "predictions.csv: one row per holdout row, same order, column `prediction` (True/False).",
     },
+    "wine": {
+        "kind": "tabular",
+        "source": "wine/wine.csv",
+        "file": "wine.csv",
+        "target": "variety",
+        "task": "classification",
+        "prompt": "wine.csv has wine reviews: country, province, price, points and the taster's description. "
+        "We currently ask an LLM to guess the grape `variety` for listings that don't state it. Train a "
+        "model that predicts the variety and tell me how good it is and whether it could replace the "
+        "LLM. Finally write predictions for holdout.csv (same columns, no `variety`) to predictions.csv: "
+        "one row per holdout row, same order, column `prediction`.",
+    },
     "telco_churn": {
         "kind": "tabular",
         "source": "telco_churn/telco_churn.csv",

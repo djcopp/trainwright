@@ -11,6 +11,7 @@ Chosen to span modality, size and difficulty:
   bike_sharing   table  17k    regression, hourly demand (temporal structure)
   miniboone      table  130k   binary physics signal vs background (large)
   telco_churn    table  7k     binary, imbalanced, mixed types, dirty numeric column
+  wine           table  30k    20 grape varieties from a tasting note + country/price/points (mixed)
 """
 
 from __future__ import annotations
@@ -95,6 +96,11 @@ def fetch(name: str) -> None:
         df = _hf("sealuzh/app_reviews", "default", "train")
         df = df[df["review"].str.len() > 3].sample(n=20000, random_state=0)
         df[["package_name", "review", "star"]].to_csv(dest / "reviews.csv", index=False)
+    elif name == "wine":
+        df, _ = _openml(46653)
+        top = df["variety"].value_counts().index[:20]
+        df = df[df["variety"].isin(top)].sample(n=30000, random_state=0)
+        df.to_csv(dest / "wine.csv", index=False)
     elif name in ("mercedes", "bike_sharing", "miniboone", "telco_churn"):
         did = {"mercedes": 42570, "bike_sharing": 42712, "miniboone": 41150, "telco_churn": 42178}[
             name
@@ -110,7 +116,7 @@ def fetch(name: str) -> None:
 
 
 if __name__ == "__main__":
-    names = sys.argv[1:] or ["beans", "eurosat", "tweet_irony", "app_reviews", "mercedes", "bike_sharing", "miniboone", "telco_churn"]  # fmt: skip
+    names = sys.argv[1:] or ["beans", "eurosat", "tweet_irony", "app_reviews", "mercedes", "bike_sharing", "miniboone", "telco_churn", "wine"]  # fmt: skip
     for n in names:
         try:
             fetch(n)
