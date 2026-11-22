@@ -72,6 +72,7 @@ MCP instead of the CLI: `claude mcp add trainwright -- trainwright mcp`.
 | `auto`, `wait` | the whole search, finalized; runs until new rounds stop improving (`--budget` for a hard ceiling); `--background` + `wait` |
 | `check`, `decide` | the definition of done, read from the project's records; record judgement calls for reviewers |
 | `split`, `baseline`, `train`, `tune`, `bag`, `ensemble` | the individual search steps |
+| `rollup` | event log (transactions, sessions) -> one row of features per entity, as of a cutoff |
 | `errors`, `try` | where the model is wrong, plus self-built candidate features; test a feature idea in seconds |
 | `diagnose`, `features`, `runs`, `show`, `status` | curve diagnosis, feature importance, leaderboard (±SE), run details, checklist |
 | `evaluate` | val error analysis, or the logged one-time test evaluation |

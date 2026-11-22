@@ -108,6 +108,22 @@ Validation must mimic how the model will be used, or every number is wrong.
 - **Duplicates/near-duplicates** (burst photos, repeated rows or messages) are grouped
   automatically so they never straddle splits. Check `profile`'s duplicate line.
 
+## Event logs: `trainwright rollup`
+
+If the data is a log (transactions, sessions, tickets) and predictions are per customer or user,
+build one row per entity first, using only events before the prediction date:
+
+```bash
+trainwright rollup --events transactions.csv --key "Customer ID" --time InvoiceDate \
+  --entities customers.csv --entity-key customer_id --cutoff 2011-09-01 \
+  --expr "revenue=Quantity*Price" --out customer_features.csv
+trainwright init --data customer_features.csv --target <label>
+```
+
+It adds counts, recency, tenure, 7/30/90/365-day windows, numeric sums/means and categorical
+diversity per entity. Run it with the same arguments on fresh events at prediction time (for the
+holdout entities: `--entities holdout.csv`). Add domain features on top in `features.py`.
+
 ## Feature engineering (tabular): `features.py`
 
 ```python
