@@ -30,45 +30,50 @@ hypotheses, reading diagnoses and deciding what to try next.
 ```bash
 trainwright init --data data.csv --target label     # once; writes trainwright.yaml
 trainwright profile                     # READ it: leaks, duplicates, group keys, recommendations
-#   -> look at the data yourself (pandas), decide the deployment scenario (below),
-#      fix data.drop / data.group_column, write features.py if domain features are obvious
-trainwright auto --budget 20m --background   # the whole search: split, baselines, strong recipes,
-trainwright wait --timeout 7m           #   seed replicas, ensemble, finalize on train+val; repeat
-                                        #   `wait` until it reports "auto finished"
-#   -> your edge: better features / data fixes, then `trainwright auto` again
-#      (it only reruns steps that are stale), or targeted runs on the leader (below)
+#   -> decide the deployment scenario (below); fix data.drop / data.group_column
+trainwright split
+trainwright errors                      # where a fast proxy model is wrong, plus candidate
+                                        #   features it built and measured itself
+trainwright try my_features.py --hypothesis "..." --keep   # seconds per idea; repeat
+trainwright auto --budget 20m --background   # the search, on the features you kept
+trainwright wait --timeout 7m           # repeat until it reports "auto finished"
+trainwright errors best                 # the leader's mistakes: next round of ideas
 trainwright evaluate best --split test --reason "final model"   # ONCE, at the end
-trainwright predict -i holdout.csv --out predictions.csv --columns prediction   # finalized model;
-                                        # --columns picks id/filename/prediction/confidence
+trainwright predict -i holdout.csv --out predictions.csv --columns prediction
 trainwright export final && trainwright benchmark final         # ONNX bundle, server, cost vs LLM
-trainwright report                      # reports/REPORT.md for the human
 ```
 
-`trainwright status` tells you where you are and what to do next. Add `--json` to any command
-for machine-readable output. Every command prints `next:` suggestions.
+`trainwright status` tells you where you are. Add `--json` to any command for machine-readable
+output. Every command prints `next:` suggestions.
 
-## Use the whole time budget
+## Where the gains are
 
-`auto` gives a strong, well-validated model in one command; that is the floor, not the goal.
-Bigger budgets buy better models (more seeds, longer schedules), so give it **about half of your
-total time**, not just what fits in one tool call: `--background` detaches it, `wait --timeout 7m`
-blocks in bounded chunks. While it runs, read the data and draft `features.py` (don't start other
-training). Spend the rest on what a search cannot do, rerunning `auto` after each change:
+A model search moves the score by a percent or two. Information the model doesn't have moves it
+by ten or more: on one eye-tracking task, features relative to each assignment's averages
+took a gradient-boosted model from 0.72 to 0.81 accuracy. Search is automated; this part is
+your job.
 
-1. **The data.** Leaks (`profile` flags single-column and sum-of-columns leaks), the deployment
-   scenario (group keys, time), duplicates, label noise (`trainwright review`).
-2. **Features** (`features.py`): domain knowledge the model can't learn from a few thousand rows.
-   Check with `trainwright features <run>` what the model relies on.
-3. **Targeted experiments** on the leader, one hypothesis per run:
-   `trainwright train --from-run <id> -o key=value --hypothesis "..."`; `trainwright tune --budget 10m`;
-   `trainwright ensemble --seeds 3`. Read `trainwright diagnose <id>` and the curves.
-4. Then pick the leader on val (ties → simpler/cheaper), evaluate test once and predict.
-   If `auto` reported it had no time to finalize, **predict with the best run as is**: refitting
-   a big image/text ensemble by hand can take longer than your remaining time. Leave a margin:
-   predictions must exist before your time runs out.
+1. `trainwright errors` fits early-stopped HistGBM on the current `features.py` in seconds, then
+   shows the slices holding most of the loss, slices with systematic bias, confused classes and
+   the worst rows (all rows: `.trainwright/val_errors.csv`, load it with pandas). It also writes
+   and measures candidates it can build itself: per-group statistics for entity keys and a log
+   target. `auto` adopts candidates that are clearly better (z > 2) on its own.
+2. Read the slices and worst rows like a domain expert. Why would a model miss these? A missing
+   interaction, a ratio, a count per key, a date part, a unit problem, a label error?
+3. Write the idea as a `features.py` candidate and `trainwright try cand.py --hypothesis "..."`.
+   The proxy reports the gain with a paired-bootstrap error bar. `--keep` promotes it only if
+   it is better; `--drop col1,col2` tests removing columns. Every trial is logged in
+   `.trainwright/feature_trials.jsonl`.
+4. Three to five cycles take about ten minutes. Then run `auto` (about half your total time),
+   and `errors best` on the leader while it runs or after.
+5. Then pick the leader on val (ties → simpler/cheaper), evaluate test once and predict.
+   If `auto` reported it had no time to finalize, **predict with the best run as is**. Leave a
+   margin: predictions must exist before your time runs out.
 
-Manual control is always available: `split`, `baseline`, `train`, `ensemble` and `finalize` are
-the same steps `auto` runs.
+Targeted runs on the leader stay available: `trainwright train --from-run <id> -o key=value
+--hypothesis "..."`, `tune`, `ensemble --seeds 3`, `diagnose <id>` (training curves).
+Text and image projects: `trainwright errors best` lists the worst examples with their text or
+path; read them. Mislabels are common (`trainwright review`).
 
 ## Decide the deployment scenario first
 
