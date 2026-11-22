@@ -77,6 +77,12 @@ Targeted runs on the leader stay available: `trainwright train --from-run <id> -
 Text and image projects: `trainwright errors best` lists the worst examples with their text or
 path; read them. Mislabels are common (`trainwright review`).
 
+## Always have a deliverable
+
+As soon as `auto` (or any run) has a leader, write the requested predictions with it, then keep
+improving and overwrite them. `trainwright predict` works on the best run so far even while
+`auto` is still running. A better model that isn't delivered scores nothing.
+
 ## When you are done
 
 Finished is a checklist, not a clock. `trainwright check` reads the project's own records and
