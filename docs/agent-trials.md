@@ -32,6 +32,7 @@ Holdout scores. **Bold** = better side. "→" = before → after the fix.
 | 7 | 0.4.2 | banking77 ×2 | **0.931, 0.937** | 0.932, 0.933 | tie | |
 | 8 | 0.5.0 | 8 new tasks | 2 wins | **6 wins** | `auto` ran 3–12 of 40 min; roberta-base missing | `auto --background` + `wait`; roberta-base; bagging |
 | 9 | 0.5.2 | 12 tasks | 5 wins | **7 wins** | a step overran its cap; ties broken by run order; `auto` stopped at 7 of 18 min | guarded steps; log-loss tie-break; budget-filling replicas (0.5.4) |
+| 12 | 0.6.x | 12 tasks | 6 wins | 6 wins, mean +2.2%, worst −1.4% | the 0.5.4 fixes held (banking77 0.893 → 0.928, car_parts 0.981 → 0.992); every loss is within noise; agents stopped at 6–23 of 40 min | `check`, a reviewer subagent and untimed `auto` (0.7) |
 
 \* rounds 1–2 accidentally ran against the live dev checkout (harness PATH bug, fixed in round 3).
 
