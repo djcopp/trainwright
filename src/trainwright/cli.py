@@ -745,7 +745,8 @@ def auto(
         args += [] if finish else ["--no-finish"]
         args += [] if seeds else ["--no-seeds"]
         lp = log_path(project)
-        with lp.open("a") as f:
+        # the child writes its progress to auto.log itself; raw stdout/stderr (tracebacks) go here
+        with (project.state_dir / "auto.stdout.log").open("a") as f:
             proc = subprocess.Popen(
                 args, cwd=project.root, stdout=f, stderr=subprocess.STDOUT, start_new_session=True
             )
@@ -839,10 +840,12 @@ def wait(
     assert st is not None
     status_ = st.get("status")
     if status_ == "running":
-        left = max(0.0, float(st.get("deadline", 0)) - _time.time())
+        left = float(st.get("deadline", 0)) - _time.time()
         emit(
             st,
-            f"auto still running (about {fmt_seconds(left)} of budget left)",
+            f"auto still running (about {fmt_seconds(left)} of budget left)"
+            if left > 0
+            else "auto is past its budget and finishing its last step (ensemble/finalize)",
             [{"command": "trainwright wait --timeout 7m", "why": "keep waiting"}],
         )
         return

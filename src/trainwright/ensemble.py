@@ -91,6 +91,7 @@ def build_ensemble(
     top: int = 6,
     seeds: int = 1,
     progress: Callable[[str], None] | None = print,
+    replica_budget_s: float | None = None,
 ) -> Run | None:
     """Greedy-weighted ensemble of the best runs. Returns None if no combination beats the best run."""
     import yaml
@@ -109,9 +110,10 @@ def build_ensemble(
         base_run = Run(project.runs_dir / b["id"])
         base = yaml.safe_load(base_run.config_path.read_text())
         for i in range(1, seeds):
-            exp = ExperimentConfig.model_validate(
-                apply_overrides(base, {"train.seed": int(base["train"]["seed"]) + i})
-            )
+            ov: dict[str, object] = {"train.seed": int(base["train"]["seed"]) + i}
+            if replica_budget_s:
+                ov["train.time_budget"] = f"{max(10, int(replica_budget_s))}s"
+            exp = ExperimentConfig.model_validate(apply_overrides(base, ov))
             say(f"seed replica {i}/{seeds - 1} of {base_run.id}")
             train(
                 project,

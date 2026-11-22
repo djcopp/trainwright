@@ -394,7 +394,10 @@ def _autopilot(
         if n_rows > 200_000:
             n_seeds = min(n_seeds, 2)
     try:
-        ens = build_ensemble(project, top=6, seeds=n_seeds, progress=None)
+        replica_budget = left() * 0.7 / max(1, n_seeds - 1) if n_seeds > 1 else None
+        ens = build_ensemble(
+            project, top=6, seeds=n_seeds, progress=None, replica_budget_s=replica_budget
+        )
         if n_seeds > 1:
             note(f"trained {n_seeds - 1} seed replica(s) of {bn['id'] if bn else '?'}")
         if ens is not None:
@@ -418,8 +421,9 @@ def _autopilot(
             and r.get("tied_with_leader")
             and r.get("same_split") is not False
         ]
+        grace = 0.05 * budget_s  # finalize may run slightly past the deadline, never far
         pick = next(
-            (r for r in cands if _finalize_cost(r, project) <= max(remaining, 0) * 1.5), None
+            (r for r in cands if _finalize_cost(r, project) <= max(remaining, 0) + grace), None
         )
         if pick is None:
             note(
