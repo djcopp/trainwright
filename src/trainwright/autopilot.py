@@ -309,7 +309,7 @@ def _autopilot(
     from .baselines import BASELINES, run_baselines
     from .leaderboard import best_run, leaderboard
     from .pipeline import ensure_split, get_records
-    from .tracking import Run
+    from .tracking import Run, list_runs
 
     t0 = time.time()
     deadline = t0 + budget_s
@@ -464,20 +464,42 @@ def _autopilot(
                 )
                 bagged = True
 
-    # seed replicas of the best neural recipe, then the ensemble over everything
-    n_seeds = 1
+    # seed replicas of the best neural recipe, one at a time while the budget allows (always
+    # leaving room to finalize), then the greedy ensemble over everything
     bn = best_run(project, kind="neural")
+    replicas = 0
     if seeds and not bagged and bn is not None and current(bn):
         per = float(bn.get("train_time_s") or 0.0) + 5
-        n_seeds = int(min(5, max(1, left() * 0.7 // max(per, 1.0))))
-        if n_rows > 200_000:
-            n_seeds = min(n_seeds, 2)
-    args = ["ensemble", "--top", "6", "--seeds", str(n_seeds)]
-    if n_seeds > 1:
-        args += ["--replica-budget", f"{int(left() * 0.7 / (n_seeds - 1))}s"]
-    res, err = _guarded(project, args, max(left(), 0) + 0.1 * budget_s + 120)
-    if n_seeds > 1:
-        note(f"trained up to {n_seeds - 1} seed replica(s) of {bn['id'] if bn else '?'}")
+        base_seed = int(Run(project.runs_dir / bn["id"]).meta.get("seed") or 0)
+        max_replicas = 2 if n_rows > 200_000 else 4
+        while replicas < max_replicas:
+            # finalizing an ensemble refits every member: keep room for that
+            spare = deadline - time.time() - (replicas + 2) * per - 0.05 * budget_s
+            cap = min(per * 1.3, spare)
+            if cap < max(30.0, 0.6 * per):
+                break
+            k = replicas + 1
+            args = [
+                "train",
+                "--from-run",
+                bn["id"],
+                "--tag",
+                "seed",
+                "--name",
+                f"seed{k}-{bn['id']}"[:40],
+            ]
+            args += ["-H", f"seed replica {k} of {bn['id']} (for ensembling)"]
+            args += _ov_args(
+                {"train.seed": base_seed + 100 + k, "train.time_budget": f"{int(cap)}s"}
+            )
+            res, err = _guarded(project, args, cap * 1.3 + 120)
+            if res is None:
+                note(f"seed replica {k} failed: {err}")
+                break
+            replicas += 1
+        if replicas:
+            note(f"trained {replicas} seed replica(s) of {bn['id']}")
+    res, err = _guarded(project, ["ensemble", "--top", "8"], max(60.0, 0.1 * budget_s) + 120)
     if res is None:
         note(f"no ensemble: {err}")
     elif res.get("run"):
@@ -504,7 +526,21 @@ def _autopilot(
         pick = next(
             (r for r in cands if _finalize_cost(r, project) <= max(remaining, 0) + grace), None
         )
-        if pick is None:
+        existing = next(
+            (
+                r
+                for r in reversed(list_runs(project.runs_dir))
+                if pick is not None
+                and r.meta.get("kind") == "final"
+                and r.meta.get("parent") == pick["id"]
+                and r.meta.get("status") == "completed"
+            ),
+            None,
+        )
+        if existing is not None:
+            result["final"] = existing.id
+            note(f"{pick['id']} is already finalized as {existing.id}")  # type: ignore[index]
+        elif pick is None:
             note(
                 "not enough budget left to refit on train+val; `trainwright predict` will use the best run as is"
             )

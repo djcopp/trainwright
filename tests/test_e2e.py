@@ -325,7 +325,7 @@ def test_predict_prefers_the_finalized_model(tabular_project):
 def test_auto_runs_the_whole_search_and_finalizes(regression_project):
     tw = regression_project
     tw("init", "--data", "houses.csv", "--target", "price")
-    res = tw("auto", "--budget", "90s", *FAST, "-o", "train.max_epochs=6")["result"]
+    res = tw("auto", "--budget", "3m", *FAST, "-o", "train.max_epochs=6")["result"]
     assert res["best"] is not None and res.get("final")
     models = {r["model"] for r in tw("runs")["result"]}
     assert {"baseline:hist_gbm", "tabular_mlp"} <= models
