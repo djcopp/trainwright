@@ -322,6 +322,9 @@ def _feature_step(
 
 SAFETY_CAP_S = 7200.0  # without --budget, auto runs until converged; this only stops runaways
 MAX_ROUNDS = 4
+BAG_MAX_ROWS = (
+    20_000  # bags help small data (+4.9% on 16 small suites); on large data they cost 5x for ~0
+)
 
 
 def autopilot(
@@ -543,7 +546,7 @@ def _autopilot(
             and not cfg.data.time_column
             and bn is not None
             and current(bn)
-            and n_rows <= 100_000
+            and n_rows <= BAG_MAX_ROWS
         ):
             break
         score = float(bn.get(f"val_{m}") or float("nan"))
@@ -650,7 +653,7 @@ def _autopilot(
                 and new_best is not None
                 and new_best["id"] != bn["id"]
                 and not cfg.data.time_column
-                and n_rows <= 100_000
+                and n_rows <= BAG_MAX_ROWS
                 and left() > 5 * per * 1.3
             ):
                 cap = left() * 0.6
