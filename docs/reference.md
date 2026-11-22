@@ -69,7 +69,8 @@ MCP instead of the CLI: `claude mcp add trainwright -- trainwright mcp`.
 |---|---|
 | `init` | project from a CSV/Parquet file, image folder or manifest |
 | `profile` | types, leaks (incl. sum-of-columns), duplicates, entity keys; dates and free text become features |
-| `auto`, `wait` | the whole search on a budget, finalized; `--background` + `wait` for long budgets |
+| `auto`, `wait` | the whole search, finalized; runs until new rounds stop improving (`--budget` for a hard ceiling); `--background` + `wait` |
+| `check`, `decide` | the definition of done, read from the project's records; record judgement calls for reviewers |
 | `split`, `baseline`, `train`, `tune`, `bag`, `ensemble` | the individual search steps |
 | `errors`, `try` | where the model is wrong, plus self-built candidate features; test a feature idea in seconds |
 | `diagnose`, `features`, `runs`, `show`, `status` | curve diagnosis, feature importance, leaderboard (±SE), run details, checklist |

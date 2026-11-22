@@ -30,16 +30,19 @@ hypotheses, reading diagnoses and deciding what to try next.
 ```bash
 trainwright init --data data.csv --target label     # once; writes trainwright.yaml
 trainwright profile                     # READ it: leaks, duplicates, group keys, recommendations
-#   -> decide the deployment scenario (below); fix data.drop / data.group_column
+#   -> decide the deployment scenario (below); fix data.drop / data.group_column, or
+#      record the call: trainwright decide deployment "predictions are for ... because ..."
 trainwright split
 trainwright errors                      # where a fast proxy model is wrong, plus candidate
                                         #   features it built and measured itself
 trainwright try my_features.py --hypothesis "..." --keep   # seconds per idea; repeat
-trainwright auto --budget 20m --background   # the search, on the features you kept
+trainwright auto --background           # the search; runs until new rounds stop improving
 trainwright wait --timeout 7m           # repeat until it reports "auto finished"
 trainwright errors best                 # the leader's mistakes: next round of ideas
 trainwright evaluate best --split test --reason "final model"   # ONCE, at the end
 trainwright predict -i holdout.csv --out predictions.csv --columns prediction
+trainwright check                       # the definition of done: repeat until DONE
+#   -> then a reviewer subagent checks your report against the records (below)
 trainwright export final && trainwright benchmark final         # ONNX bundle, server, cost vs LLM
 ```
 
@@ -64,16 +67,33 @@ your job.
    The proxy reports the gain with a paired-bootstrap error bar. `--keep` promotes it only if
    it is better; `--drop col1,col2` tests removing columns. Every trial is logged in
    `.trainwright/feature_trials.jsonl`.
-4. Three to five cycles take about ten minutes. Then run `auto` (about half your total time),
-   and `errors best` on the leader while it runs or after.
-5. Then pick the leader on val (ties → simpler/cheaper), evaluate test once and predict.
-   If `auto` reported it had no time to finalize, **predict with the best run as is**. Leave a
-   margin: predictions must exist before your time runs out.
+4. Keep going while ideas still come from the evidence (`check` asks for at least three tested
+   ideas, or a recorded reason to stop). Then run `auto`: without `--budget` it keeps adding
+   rounds while they beat the leader by more than noise. Run `errors best` on the leader after.
+5. Pick the leader on val (ties → simpler/cheaper), evaluate test once and predict.
 
 Targeted runs on the leader stay available: `trainwright train --from-run <id> -o key=value
 --hypothesis "..."`, `tune`, `ensemble --seeds 3`, `diagnose <id>` (training curves).
 Text and image projects: `trainwright errors best` lists the worst examples with their text or
 path; read them. Mislabels are common (`trainwright review`).
+
+## When you are done
+
+Finished is a checklist, not a clock. `trainwright check` reads the project's own records and
+lists what is missing: the profile, leaks dropped or explained, a deployment decision, error
+analysis with tested ideas, a converged search, a finalized leader, one test evaluation.
+Judgement calls go on the record: `trainwright decide <topic> "<decision and evidence>"`
+(topics: `deployment`, `features`, `search`, `model`, `leak:<column>`).
+
+When `check` says DONE, **spawn a reviewer subagent** before you report. Give it the `check`
+output, `trainwright runs`, `.trainwright/decisions.jsonl` and your draft report, and ask it to:
+
+- check every number in the report against the records (val vs test, which model is served);
+- check the split matches how the model will be used;
+- name one idea the evidence points to that was not tested, if there is one;
+- answer PASS or a list of fixes.
+
+Fix what it lists (test the idea with `try`, rerun `auto`) and review again until it passes.
 
 ## Decide the deployment scenario first
 
