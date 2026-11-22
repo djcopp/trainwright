@@ -864,6 +864,36 @@ def wait(
     )
 
 
+@app.command()
+def bag(
+    ref: str = typer.Argument("best-neural", help="Run whose recipe to bag."),
+    folds: int = typer.Option(5, help="Number of folds (= models in the bag)."),
+) -> None:
+    """Cross-validated bag: k copies of a recipe on k folds of train+val, scored out-of-fold."""
+    from .bagging import build_bag
+    from .leaderboard import format_table, leaderboard
+
+    STATE["command"] = "bag"
+    project = _project()
+    project.load_user_plugins()
+    run = build_bag(project, ref, k=folds, progress=progress)
+    rows = leaderboard(project)
+    emit(
+        {"run": run.id, "summary": run.summary},
+        "\n" + format_table(rows, project.config.metric),
+        [
+            {
+                "command": "trainwright ensemble",
+                "why": "the bag competes in greedy ensembles with its out-of-fold predictions",
+            },
+            {
+                "command": f"trainwright finalize {run.id}",
+                "why": "free: the fold models are already trained on train+val",
+            },
+        ],
+    )
+
+
 @app.command("leaderboard", hidden=True)
 def leaderboard_alias(
     limit: int = typer.Option(30, help="Rows to show."),

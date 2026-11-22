@@ -59,6 +59,8 @@ def leaderboard(
             continue
         if row["kind"] == "final" and kind != "final":
             continue  # trained on val: its val score is not comparable
+        if row["kind"] == "fold" and kind != "fold":
+            continue  # a bag member: early-stopped on its own fold, scored via the bag
         rows.append(row)
     key = f"val_{cfg.metric}"
     sign = -1 if cfg.metric_mode == "max" else 1

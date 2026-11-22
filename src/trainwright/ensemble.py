@@ -24,7 +24,7 @@ from .tracking import Run
 
 def member_outputs(project: Project, run: Run, split: str) -> tuple[np.ndarray, np.ndarray]:
     """-> (outputs, y) for one member on a split. Probabilities or target-space predictions."""
-    if run.meta.get("kind") == "ensemble":
+    if run.meta.get("members"):
         return ensemble_outputs(project, run, split)
     if (run.dir / "model.joblib").exists():
         from .evaluate import _baseline_outputs
@@ -48,6 +48,12 @@ def _average(outs: list[np.ndarray], weights: list[float]) -> np.ndarray:
 
 def ensemble_outputs(project: Project, run: Run, split: str) -> tuple[np.ndarray, np.ndarray]:
     meta = run.meta
+    if meta.get("bag") and split in ("train", "val"):
+        from .bagging import bag_val_outputs
+
+        return bag_val_outputs(
+            project, run, split
+        )  # out-of-fold: no row scored by a model that saw it
     outs, y = [], None
     for mid in meta["members"]:
         o, yy = member_outputs(project, Run(project.runs_dir / mid), split)
@@ -123,7 +129,7 @@ def build_ensemble(
             r
             for r in leaderboard(project)
             if r.get("same_split") is not False
-            and r["kind"] in ("neural", "baseline")
+            and r["kind"] in ("neural", "baseline", "bag")
             and r.get("model") != "baseline:dummy"
             and r.get(f"val_{m}") is not None
             and not (cfg.modality == "image" and r["kind"] == "baseline")

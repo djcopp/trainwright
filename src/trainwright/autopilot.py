@@ -137,6 +137,8 @@ def _finalize_cost(run_row: dict[str, Any], project: Project) -> float:
     from .tracking import Run
 
     run = Run(project.runs_dir / run_row["id"])
+    if run.meta.get("bag"):
+        return 0.0  # fold models already trained on train+val
     members = run.meta.get("members")
     if members:
         return sum(
@@ -157,6 +159,7 @@ def autopilot(
     finish: bool = True,
     seeds: bool = True,
     progress: Say | None = print,
+    bag: bool = True,
 ) -> dict[str, Any]:
     """Run the search; records running/done/failed in .trainwright/auto.json for `wait`/`status`."""
     import os
@@ -164,7 +167,7 @@ def autopilot(
 
     t0 = time.time()
     try:
-        res = _autopilot(project, budget_s, overrides, finish, seeds, progress)
+        res = _autopilot(project, budget_s, overrides, finish, seeds, progress, bag)
     except BaseException as e:
         write_json(
             state_path(project),
@@ -190,6 +193,7 @@ def _autopilot(
     finish: bool = True,
     seeds: bool = True,
     progress: Say | None = print,
+    bag: bool = True,
 ) -> dict[str, Any]:
     import os
 
@@ -306,10 +310,36 @@ def _autopilot(
                 f"{b2['id'] if b2 else '?'} val_{m}={(b2 or {}).get(f'val_{m}')}"
             )
 
+    # cross-validated bag of the best neural recipe: k models on train+val, out-of-fold val
+    bagged = False
+    bn = best_run(project, kind="neural")
+    if (
+        bag
+        and cfg.modality == "tabular"
+        and not cfg.data.time_column
+        and bn is not None
+        and current(bn)
+        and n_rows <= 100_000
+    ):
+        per = float(bn.get("train_time_s") or 0.0) + 5
+        if left() > 5 * per * 1.3:
+            from .bagging import build_bag
+
+            try:
+                b = build_bag(project, bn["id"], k=5, progress=None)
+                m = cfg.metric
+                note(
+                    f"5-fold bag of {bn['id']}: val_{m}={b.summary['val'][m]:.4f} (out-of-fold), "
+                    f"oof over {b.summary['n_oof']} rows {b.summary['oof'][m]:.4f}"
+                )
+                bagged = True
+            except Exception as e:
+                note(f"bag failed: {type(e).__name__}: {str(e)[:200]}")
+
     # seed replicas of the best neural recipe, then the ensemble over everything
     n_seeds = 1
     bn = best_run(project, kind="neural")
-    if seeds and bn is not None and current(bn):
+    if seeds and not bagged and bn is not None and current(bn):
         per = float(bn.get("train_time_s") or 0.0) + 5
         n_seeds = int(min(5, max(1, left() * 0.7 // max(per, 1.0))))
         if n_rows > 200_000:

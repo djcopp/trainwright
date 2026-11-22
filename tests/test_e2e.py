@@ -356,3 +356,22 @@ def test_auto_background_and_wait(regression_project):
     assert tw("status")["next_steps"][0]["command"].startswith("trainwright wait")
     done = tw("wait", "--timeout", "5m")["result"]
     assert done["status"] == "done" and done["best"]
+
+
+def test_bag_scores_out_of_fold_and_finalizes_for_free(tabular_project):
+    tw = tabular_project
+    tw("init", "--data", "data.csv")
+    tw("split")
+    tw("baseline", "--only", "dummy,hist_gbm")
+    rid = tw("train", *FAST, "-o", "train.max_epochs=4", "-H", "base")["result"]["run"]
+    bag = tw("bag", rid, "--folds", "3")["result"]
+    s = bag["summary"]
+    assert s["val"]["roc_auc"] > 0.7 and s["n_oof"] > s.get("n_val", 0)
+    rows = tw("runs")["result"]
+    assert not any(r["kind"] == "fold" for r in rows) and any(r["kind"] == "bag" for r in rows)
+    tw("ensemble")  # a bag can be an ensemble member (out-of-fold val predictions)
+    final = tw("finalize", bag["run"])["result"]
+    assert final["run"].startswith(tuple("0123456789"))
+    tw("export", final["run"])
+    pred = tw("predict", final["run"], "-i", "data.csv", "--limit", "3")["result"]
+    assert len(pred) == 3
